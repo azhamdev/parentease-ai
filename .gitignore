@@ -1,0 +1,5 @@
+.venv
+.env
+
+parentease.db
+/chroma_db
