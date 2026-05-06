@@ -3,12 +3,14 @@ name = "parentease-ai"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "chonkie>=1.0.4",
     "chromadb>=1.5.9",
     "fastapi>=0.136.1",
     "openai>=2.34.0",
     "pydantic>=2.13.3",
+    "pypdf>=5.0.0",
     "python-dotenv>=1.2.2",
-    "sqlmodel>=0.0.38",
     "scalar-fastapi>=1.0.3",
+    "sqlmodel>=0.0.38",
     "uvicorn[standard]>=0.46.0",
 ]
