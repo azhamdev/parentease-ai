@@ -55,12 +55,39 @@ chroma_client = chromadb.PersistentClient(path=str(CHROMA_PATH))
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+# Page range: (start_char_inclusive, end_char_exclusive, page_number_1indexed)
+PageRange = tuple[int, int, int]
 
-def extract_text(pdf_path: pathlib.Path) -> str:
-    """Return all text from a PDF, pages joined by a blank line."""
+
+def extract_text_with_pages(
+    pdf_path: pathlib.Path,
+) -> tuple[str, list[PageRange]]:
+    """Return (full_text, page_ranges) so each chunk can be mapped to a page.
+
+    page_ranges is a list of (start, end, page_num) where start/end are
+    character offsets in full_text and page_num is 1-indexed.
+    """
     reader = pypdf.PdfReader(pdf_path)
-    pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n\n".join(pages)
+    page_texts: list[str] = [p.extract_text() or "" for p in reader.pages]
+
+    page_ranges: list[PageRange] = []
+    offset = 0
+    for i, text in enumerate(page_texts):
+        if i > 0:
+            offset += 2  # accounts for the "\n\n" separator added by join()
+        page_ranges.append((offset, offset + len(text), i + 1))
+        offset += len(text)
+
+    return "\n\n".join(page_texts), page_ranges
+
+
+def get_page_number(start_index: int, page_ranges: list[PageRange]) -> int:
+    """Return the 1-indexed page number for a chunk that starts at start_index."""
+    for start, end, page_num in page_ranges:
+        if start <= start_index < end:
+            return page_num
+    # Fallback: nearest page (handles edge case where chunk starts in a separator)
+    return min(page_ranges, key=lambda r: abs(r[0] - start_index))[2]
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -83,8 +110,13 @@ def ingest() -> None:
 
     print(f"[INFO] Found {len(pdf_files)} PDF(s): {[f.name for f in pdf_files]}")
 
-    # get_or_create keeps reruns idempotent; existing docs are preserved
-    collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
+    # Always start fresh so re-runs don't leave stale chunks (e.g. without page numbers)
+    try:
+        chroma_client.delete_collection(name=COLLECTION_NAME)
+        print(f"[INFO] Cleared existing collection '{COLLECTION_NAME}'")
+    except Exception:
+        pass
+    collection = chroma_client.create_collection(name=COLLECTION_NAME)
 
     # TokenChunker: fast, no ML model required, tokenizer matches embedding model
     chunker = TokenChunker(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
@@ -94,7 +126,7 @@ def ingest() -> None:
     for pdf_path in pdf_files:
         print(f"\n── {pdf_path.name} ──")
 
-        raw_text = extract_text(pdf_path)
+        raw_text, page_ranges = extract_text_with_pages(pdf_path)
         if not raw_text.strip():
             print("  [WARN] No text extracted – is this a scanned PDF? Skipping.")
             continue
@@ -115,10 +147,15 @@ def ingest() -> None:
             all_embeddings.extend(embed_texts(batch))
             print(f"  Embedded : batch {i + 1}/{num_batches}  ({len(batch)} chunks)")
 
-        # 3. Build metadata ──────────────────────────────────────────────────
-        ids = [str(uuid.uuid4()) for _ in texts]
+        # 3. Build metadata — include page number for each chunk ─────────────
+        ids = [str(uuid.uuid4()) for _ in chunks]
         metadatas = [
-            {"source": pdf_path.name, "chunk_index": idx} for idx in range(len(texts))
+            {
+                "source": pdf_path.name,
+                "chunk_index": idx,
+                "page": get_page_number(chunk.start_index, page_ranges),
+            }
+            for idx, chunk in enumerate(chunks)
         ]
 
         # 4. Upsert into ChromaDB in batches ─────────────────────────────────

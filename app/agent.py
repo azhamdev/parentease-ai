@@ -15,9 +15,14 @@ client = OpenAI(
     api_key=os.getenv("OPEN_ROUTER_API_KEY"),
 )
 
-# Initialize ChromaDB for RAG (Agent A)
+# Initialize ChromaDB client (collection is fetched per-call, never cached,
+# so a re-ingest that deletes+recreates the collection never leaves a stale UUID)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-medical_collection = chroma_client.get_or_create_collection(name="pediatric_guidelines")
+COLLECTION_NAME = "pediatric_guidelines"
+
+
+def _get_collection() -> chromadb.Collection:
+    return chroma_client.get_or_create_collection(name=COLLECTION_NAME)
 
 
 def _embed_query(text: str) -> list[float]:
@@ -26,19 +31,40 @@ def _embed_query(text: str) -> list[float]:
     return response.data[0].embedding
 
 
+def _format_title(filename: str) -> str:
+    """'asi_guidelines.pdf'  →  'Asi Guidelines'"""
+    return filename.removesuffix(".pdf").replace("_", " ").replace("-", " ").title()
+
+
 # --- Tool Definitions ---
 
 
-def search_medical_guidelines(query: str) -> str:
-    """Agent A Tool: Searches the vector DB for ASI, MPASI, and pediatric guidelines."""
+def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
+    """Agent A Tool: Searches the vector DB for ASI, MPASI, and pediatric guidelines.
+
+    Returns:
+        (context_text_for_model, sources)
+        sources is a list of {"title": str, "page": int | None}
+    """
     query_embedding = _embed_query(query)
-    results = medical_collection.query(
+    results = _get_collection().query(
         query_embeddings=[query_embedding],
         n_results=3,
     )
     if results["documents"] and results["documents"][0]:
-        return "\n\n---\n\n".join(results["documents"][0])
-    return "No verified medical guidelines found in the knowledge base."
+        docs = results["documents"][0]
+        metas = results["metadatas"][0]  # list of metadata dicts
+
+        sources = [
+            {
+                "title": _format_title(m.get("source", "Unknown")),
+                "page": m.get("page"),  # None when not stored (old index)
+            }
+            for m in metas
+        ]
+        return "\n\n---\n\n".join(docs), sources
+
+    return "No verified medical guidelines found in the knowledge base.", []
 
 
 def calculate_z_score(weight_kg: float, age_months: int) -> str:
@@ -84,17 +110,22 @@ tools = [
 ]
 
 
-def process_parent_query(user_message: str) -> str:
+def process_parent_query(user_message: str) -> dict:
+    """Run the agentic loop and return {"response": str, "sources": list[dict]}."""
     messages = [
         {
             "role": "system",
-            "content": "You are ParentEase AI. You have two main roles: A Medical Librarian and a Growth Analyst. ALWAYS use your tools to fetch medical data or calculate growth. Never hallucinate.",
+            "content": (
+                "You are ParentEase AI. You have two main roles: A Medical Librarian "
+                "and a Growth Analyst. ALWAYS use your tools to fetch medical data or "
+                "calculate growth. Never hallucinate."
+            ),
         },
         {"role": "user", "content": user_message},
     ]
 
     response = client.chat.completions.create(
-        model="mistralai/mistral-large",  # Or your preferred mistral variant
+        model="mistralai/mistral-large",
         messages=messages,  # ty:ignore[invalid-argument-type]
         tools=tools,  # ty:ignore[invalid-argument-type]
         tool_choice="auto",
@@ -104,15 +135,19 @@ def process_parent_query(user_message: str) -> str:
 
     # Handle Tool Calls if Mistral decides to use one
     if response_message.tool_calls:
-        messages.append(response_message)  # Append assistant's intent to call tool
+        messages.append(response_message)
+
+        all_sources: list[dict] = []
 
         for tool_call in response_message.tool_calls:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
 
-            # Execute the respective tool
             if function_name == "search_medical_guidelines":
-                tool_result = search_medical_guidelines(function_args.get("query"))
+                tool_result, sources = search_medical_guidelines(
+                    function_args.get("query")
+                )
+                all_sources.extend(sources)
             elif function_name == "calculate_z_score":
                 tool_result = calculate_z_score(
                     function_args.get("weight_kg"), function_args.get("age_months")
@@ -120,7 +155,6 @@ def process_parent_query(user_message: str) -> str:
             else:
                 tool_result = "Unknown tool."
 
-            # Append tool result back to the context
             messages.append(
                 {
                     "tool_call_id": tool_call.id,
@@ -135,6 +169,20 @@ def process_parent_query(user_message: str) -> str:
             model="mistralai/mistral-large",
             messages=messages,  # ty:ignore[invalid-argument-type]
         )
-        return second_response.choices[0].message.content
 
-    return response_message.content
+        # Deduplicate sources by (title, page) while preserving order
+        seen: set[tuple] = set()
+        unique_sources: list[dict] = []
+        for s in all_sources:
+            key = (s["title"], s.get("page"))
+            if key not in seen:
+                seen.add(key)
+                unique_sources.append(s)
+
+        return {
+            "response": second_response.choices[0].message.content,
+            "sources": unique_sources,
+        }
+
+    # No tool calls — plain conversational reply, no sources
+    return {"response": response_message.content, "sources": []}

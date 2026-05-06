@@ -52,14 +52,15 @@ def chat_endpoint(request: ChatRequest, session: Session = Depends(get_session))
         session.add(user_msg)
 
         # 2. Process via OpenAI SDK + Mistral Tools
-        ai_response_text = process_parent_query(request.message)
+        result = process_parent_query(request.message)
+        ai_response_text = result["response"]
 
         # 3. Save AI response
         ai_msg = ChatMessage(role="assistant", content=ai_response_text)
         session.add(ai_msg)
         session.commit()
 
-        return {"response": ai_response_text}
+        return {"response": ai_response_text, "sources": result["sources"]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
