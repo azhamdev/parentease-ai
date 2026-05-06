@@ -53,7 +53,7 @@ def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
     )
     if results["documents"] and results["documents"][0]:
         docs = results["documents"][0]
-        metas = results["metadatas"][0]  # list of metadata dicts
+        metas = results["metadatas"][0]   # list of metadata dicts
 
         sources = [
             {
@@ -72,8 +72,6 @@ def calculate_z_score(weight_kg: float, age_months: int) -> str:
     # Placeholder for actual WHO calculation logic or external python sandbox execution
     return f"Calculated Z-score for {weight_kg}kg at {age_months} months is within normal limits (+0.5 SD)."
 
-
-# Define the tools schema for Mistral
 tools = [
     {
         "type": "function",
@@ -125,7 +123,7 @@ def process_parent_query(user_message: str) -> dict:
     ]
 
     response = client.chat.completions.create(
-        model="mistralai/mistral-large",
+        model="openai/gpt-5.4-mini",
         messages=messages,  # ty:ignore[invalid-argument-type]
         tools=tools,  # ty:ignore[invalid-argument-type]
         tool_choice="auto",
@@ -133,7 +131,6 @@ def process_parent_query(user_message: str) -> dict:
 
     response_message = response.choices[0].message
 
-    # Handle Tool Calls if Mistral decides to use one
     if response_message.tool_calls:
         messages.append(response_message)
 
@@ -164,9 +161,9 @@ def process_parent_query(user_message: str) -> dict:
                 }
             )
 
-        # Get final response from Mistral after reading the tool output
         second_response = client.chat.completions.create(
-            model="mistralai/mistral-large",
+            # model="mistralai/mistral-large",
+            model="openai/gpt-5.4-mini", 
             messages=messages,  # ty:ignore[invalid-argument-type]
         )
 
