@@ -1,4 +1,5 @@
 # main.py
+import pathlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from scalar_fastapi import get_scalar_api_reference
 from .models import create_db_and_tables, ChatMessage, engine
 from .agent import process_parent_query
+
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -27,6 +30,12 @@ def get_session():
         yield session
 
 
+@app.get("/", include_in_schema=False)
+def serve_frontend():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=html)
+
+
 @app.get("/scalar", include_in_schema=False)
 def scalar_html():
     return get_scalar_api_reference(
@@ -43,14 +52,15 @@ def chat_endpoint(request: ChatRequest, session: Session = Depends(get_session))
         session.add(user_msg)
 
         # 2. Process via OpenAI SDK + Mistral Tools
-        ai_response_text = process_parent_query(request.message)
+        result = process_parent_query(request.message)
+        ai_response_text = result["response"]
 
         # 3. Save AI response
         ai_msg = ChatMessage(role="assistant", content=ai_response_text)
         session.add(ai_msg)
         session.commit()
 
-        return {"response": ai_response_text}
+        return {"response": ai_response_text, "sources": result["sources"]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
