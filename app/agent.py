@@ -15,8 +15,6 @@ client = OpenAI(
     api_key=os.getenv("OPEN_ROUTER_API_KEY"),
 )
 
-# Initialize ChromaDB client (collection is fetched per-call, never cached,
-# so a re-ingest that deletes+recreates the collection never leaves a stale UUID)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 COLLECTION_NAME = "pediatric_guidelines"
 
@@ -34,9 +32,6 @@ def _embed_query(text: str) -> list[float]:
 def _format_title(filename: str) -> str:
     """'asi_guidelines.pdf'  →  'Asi Guidelines'"""
     return filename.removesuffix(".pdf").replace("_", " ").replace("-", " ").title()
-
-
-# --- Tool Definitions ---
 
 
 def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
