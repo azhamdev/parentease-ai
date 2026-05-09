@@ -1,5 +1,182 @@
-.venv
-.env
+# ==================================
+# Python & uv
+# ==================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-parentease.db
-/chroma_db
+# uv
+uv.lock
+.python-version
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.env.local
+.env.*.local
+
+# ==================================
+# IDE & Editor
+# ==================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+
+# ==================================
+# Database & Vector Store
+# ==================================
+# ChromaDB
+chroma_db/
+chroma.sqlite3
+*.sqlite3
+
+# Other databases
+*.db
+*.sqlite
+db.sqlite3
+*.sql
+
+# ==================================
+# Environment Variables & Secrets
+# ==================================
+.env
+.env.production
+.env.local
+*.env
+secrets/
+credentials/
+config.local.json
+
+# ==================================
+# Data & Documents (Sensitive/Large)
+# ==================================
+# Keep only essential docs, ignore large/personal data
+data/*.pdf
+data/*.docx
+data/private/
+uploads/
+downloads/
+*.pdf
+!data/asi_guidelines.pdf  # Keep this if it's essential
+
+# ==================================
+# Testing & Coverage
+# ==================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# ==================================
+# Logs
+# ==================================
+*.log
+logs/
+*.log.*
+
+# ==================================
+# OS Files
+# ==================================
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ==================================
+# Build & Distribution
+# ==================================
+build/
+dist/
+*.spec
+*.manifest
+
+# ==================================
+# Cache & Temporary Files
+# ==================================
+.cache/
+.temp/
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+
+# ==================================
+# Jupyter Notebooks (if any)
+# ==================================
+.ipynb_checkpoints/
+*.ipynb
+!*.ipynb  # Uncomment to keep notebooks
+
+# ==================================
+# ML/AI Models (Large Files)
+# ==================================
+models/
+*.pkl
+*.joblib
+*.h5
+*.pth
+*.onnx
+*.bin
+*.gguf
+
+# ==================================
+# Documentation Build
+# ==================================
+docs/_build/
+site/
+*.rst.html
+
+# ==================================
+# WSL & Docker
+# ==================================
+.wslconfig
+.docker/
+docker-compose.override.yml
+
+# ==================================
+# Project Specific (ParentsEase)
+# ==================================
+# Ignore user-specific data
+user_sessions/
+chat_history/
+*.json  # Unless needed for config
+!pyproject.toml
+
+# Vector embeddings cache
+embeddings_cache/
+.vector_cache/
