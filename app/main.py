@@ -10,6 +10,8 @@ from .models import create_db_and_tables, ChatMessage, engine
 from .agent import process_parent_query
 from .tools.schemas import VaccineScheduleRequest, VaccineScheduleResponse
 from .tools.vaccine_schedule import calculate_vaccine_schedule
+from app.api.v1.endpoints import sessions
+from fastapi.middleware.cors import CORSMiddleware
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
@@ -21,6 +23,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ParentEase AI Backend", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Ganti ["http://localhost:3000"] di production
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(sessions.router)
 
 
 class ChatRequest(BaseModel):
