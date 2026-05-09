@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from scalar_fastapi import get_scalar_api_reference
 from .models import create_db_and_tables, ChatMessage, engine
 from .agent import process_parent_query
+from .tools.schemas import VaccineScheduleRequest, VaccineScheduleResponse
+from .tools.vaccine_schedule import calculate_vaccine_schedule
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
@@ -64,3 +66,8 @@ def chat_endpoint(request: ChatRequest, session: Session = Depends(get_session))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tools/vaccine-schedule", response_model=VaccineScheduleResponse)
+def vaccine_schedule_endpoint(request: VaccineScheduleRequest):
+    return calculate_vaccine_schedule(request)
