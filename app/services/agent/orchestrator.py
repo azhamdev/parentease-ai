@@ -1,6 +1,6 @@
 import uuid
 import json
-from app.src.utils.schemas import SessionCreate
+from app.utils.schemas import SessionCreate
 import os
 from redis.asyncio import Redis
 from dotenv import load_dotenv

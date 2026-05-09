@@ -1,6 +1,6 @@
-from app.src.utils.schemas import SessionCreate
+from app.utils.schemas import SessionCreate
 from fastapi import APIRouter, Depends, HTTPException
-from app.src.services.agent.orchestrator import create_session
+from app.services.agent.orchestrator import create_session
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 

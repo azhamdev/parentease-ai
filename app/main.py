@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from scalar_fastapi import get_scalar_api_reference
 from .models import create_db_and_tables, ChatMessage, engine
 from .agent import process_parent_query
-from app.src.api.v1.endpoints import sessions
+from app.api.v1.endpoints import sessions
 from fastapi.middleware.cors import CORSMiddleware
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
