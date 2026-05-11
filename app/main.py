@@ -1,6 +1,6 @@
 import pathlib
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, Header
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session
 from pydantic import BaseModel
@@ -12,6 +12,8 @@ from .tools.vaccine_schedule import calculate_vaccine_schedule
 from app.api.v1.endpoints import sessions
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import select
+from app.services.agent.streaming import stream_chat_response
+from fastapi.responses import StreamingResponse
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
@@ -56,59 +58,50 @@ def scalar_html():
         title=app.title,
     )
 
-
 @app.post("/chat")
-def chat_endpoint(
+async def chat_endpoint_streaming(
     request: ChatRequest, 
     session: Session = Depends(get_session),
     x_session_id: str | None = Header(None, alias="X-Session-ID")
 ):
-    try:
-        # 1. Save user message with session_id
-        user_msg = ChatMessage(
-            role="user", 
-            content=request.message, 
-            session_id=x_session_id
-        )
-        session.add(user_msg)
-        
-        # 🆕 2. Ambil data anak dari database berdasarkan session_id
-        child_data = None
-        if x_session_id:
-            statement = select(ChildProfile).where(
-                ChildProfile.session_id == x_session_id
-            )
-            child_profile = session.exec(statement).first()
-            
-            if child_profile:
-                # Convert SQLModel ke dict untuk agent
-                child_data = child_profile.model_dump()
-                print(f"✅ Child data found: {child_data}")  # Debug log
-            else:
-                print(f"⚠️ No child data found for session: {x_session_id}")
-        
-        # 3. Process via Agent DENGAN child_data
-        result = process_parent_query(request.message, child_data)
-        ai_response_text = result["response"]
+    user_msg = ChatMessage(role="user", content=request.message, session_id=x_session_id)
+    session.add(user_msg)
+    session.commit()
 
-        # 4. Save AI response with session_id
-        ai_msg = ChatMessage(
-            role="assistant", 
-            content=ai_response_text, 
-            session_id=x_session_id
-        )
-        session.add(ai_msg)
-        session.commit()
+    child_data = None
+    if x_session_id:
+        stmt = select(ChildProfile).where(ChildProfile.session_id == x_session_id)
+        profile = session.exec(stmt).first()
+        if profile: child_data = profile.model_dump()
 
-        return {"response": ai_response_text, "sources": result["sources"]}
+    async def event_generator():
+        full_response = ""
+        try:
+            async for token in stream_chat_response(user_message=request.message, child_context=child_data):
+                # ✅ SKIP token kosong/null
+                if not token or token.strip() == "":
+                    continue
+                    
+                full_response += token
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            yield f"data: [ERROR] {str(e)}\n\n"
+        finally:
+            # ✅ JANGAN save jika response kosong
+            if full_response and full_response.strip():
+                ai_msg = ChatMessage(role="assistant", content=full_response, session_id=x_session_id)
+                session.add(ai_msg)
+                session.commit()
+            yield "data: [DONE]\n\n"
 
-    except Exception as e:
-        print(f"❌ Error in chat_endpoint: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
 
 
 @app.post("/tools/vaccine-schedule", response_model=VaccineScheduleResponse)
 def vaccine_schedule_endpoint(request: VaccineScheduleRequest):
     return calculate_vaccine_schedule(request)
+        

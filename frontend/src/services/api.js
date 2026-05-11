@@ -1,4 +1,3 @@
-// frontend/src/services/api.js
 const API_URL = "http://localhost:8000";
 
 export const createSession = async (data) => {
@@ -38,24 +37,138 @@ export const createSession = async (data) => {
   return res.json();
 };
 
-export const sendMessage = async (sessionId, message) => {
+export const sendMessage = async (sessionId, message, onChunk) => {
   const res = await fetch(`${API_URL}/chat`, {
     method: "POST",
-    headers: { 
-      "Content-Type": "application/json",
-      "X-Session-ID": sessionId
-    },
+    headers: { "Content-Type": "application/json", "X-Session-ID": sessionId },
     body: JSON.stringify({ message }),
   });
-  
-  if (!res.ok) {
-    throw new Error("Gagal mengirim pesan");
-  }
-  
-  const data = await res.json();
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-  return {
-    response: data.response,
-    sources: data.sources || []  // Simpan sources
-  };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullResponse = "";
+  let sources = [];
+  let lastChar = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      // ✅ SKIP baris kosong
+      if (line === "") continue;
+      
+      let data = "";
+      
+      // ✅ FIX: Parse SSE format "data: {content}"
+      if (line.startsWith("data: ")) {
+        data = line.slice(6); // Hapus prefix "data: "
+      } else {
+        // Fallback untuk kompatibilitas
+        data = line;
+      }
+      
+      // ✅ SKIP jika data kosong
+      if (data === "") continue;
+
+      const clean = data.trim();
+      if (clean === "[DONE]") break;
+      if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
+      if (clean.startsWith("[SOURCES] ")) {
+        try { sources = JSON.parse(clean.slice(10)); } catch { sources = []; }
+        continue;
+      }
+      
+     // ✅ AUTO-SPACE: Tambah spasi setelah tanda baca jika token berikutnya tidak dimulai spasi
+      if (lastChar && /[!.,:;]/.test(lastChar) && data && !data.startsWith(" ") && !data.startsWith("\n")) {
+        fullResponse += " ";
+        onChunk(" ");
+      }
+      
+      // ✅ Tambahkan ke response
+      fullResponse += data;
+      onChunk(data);
+      
+      // ✅ Update lastChar dengan karakter terakhir dari data
+      if (data) {
+        lastChar = data[data.length - 1];
+      }
+    }
+  }
+
+  return { response: fullResponse, sources };
 };
+
+// export const sendMessage = async (sessionId, message, onChunk) => {
+//   const res = await fetch(`${API_URL}/chat`, {
+//     method: "POST",
+//     headers: { "Content-Type": "application/json", "X-Session-ID": sessionId },
+//     body: JSON.stringify({ message }),
+//   });
+//   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+//   const reader = res.body.getReader();
+//   const decoder = new TextDecoder();
+//   let buffer = "";
+//   let fullResponse = "";
+//   let sources = [];
+//   let lastChar = ""; // ✅ Track karakter terakhir untuk auto-space
+
+//   while (true) {
+//     const { done, value } = await reader.read();
+//     if (done) break;
+
+//     buffer += decoder.decode(value, { stream: true });
+//     const lines = buffer.split("\n");
+//     buffer = lines.pop();
+
+//     for (const line of lines) {
+//       // ✅ SKIP baris kosong
+//       if (line === "") continue;
+      
+//       let data = "";
+      
+//       // ✅ Parse SSE format " {content}"
+//       if (line.startsWith(" ")) {
+//         data = line.slice(6); // Hapus prefix " "
+//       } else {
+//         // ✅ Fallback: tangkap line tanpa prefix
+//         data = line;
+//       }
+      
+//       // ✅ SKIP jika data kosong
+//       if (data === "") continue;
+
+//       const clean = data.trim();
+//       if (clean === "[DONE]") break;
+//       if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
+//       if (clean.startsWith("[SOURCES] ")) {
+//         try { sources = JSON.parse(clean.slice(10)); } catch { sources = []; }
+//         continue;
+//       }
+      
+//       // ✅ AUTO-SPACE: Tambah spasi setelah tanda baca jika token berikutnya tidak dimulai spasi
+//       if (lastChar && /[!.,:;]/.test(lastChar) && data && !data.startsWith(" ") && !data.startsWith("\n")) {
+//         fullResponse += " ";
+//         onChunk(" ");
+//       }
+      
+//       // ✅ Tambahkan ke response
+//       fullResponse += data;
+//       onChunk(data);
+      
+//       // ✅ Update lastChar dengan karakter terakhir dari data
+//       if (data) {
+//         lastChar = data[data.length - 1];
+//       }
+//     }
+//   }
+
+//   return { response: fullResponse, sources };
+// };
