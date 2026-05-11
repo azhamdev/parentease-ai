@@ -8,8 +8,7 @@ from scalar_fastapi import get_scalar_api_reference
 from .models import create_db_and_tables, ChatMessage, ChildProfile, engine
 from app.api.v1.endpoints import sessions
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import select
-from .models import ChildProfile
+from sqlmodel import select, desc
 from app.services.agent.streaming import stream_chat_response
 from fastapi.responses import StreamingResponse
 
@@ -97,3 +96,50 @@ async def chat_endpoint_streaming(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     )
+
+class SessionListItem(BaseModel):
+    session_id: str
+    child_name: str | None
+    last_message_preview: str
+    created_at: str | None
+
+
+@app.get("/sessions", response_model=list[SessionListItem])
+def list_sessions(session: Session = Depends(get_session)):
+    """Ambil semua session untuk sidebar riwayat chat."""
+    stmt = select(ChildProfile).order_by(desc(ChildProfile.id))
+    profiles = session.exec(stmt).all()
+    
+    results = []
+    for p in profiles:
+        # Ambil pesan terakhir untuk preview
+        msg_stmt = select(ChatMessage).where(
+            ChatMessage.session_id == p.session_id
+        ).order_by(desc(ChatMessage.id)).limit(1)
+        last_msg = session.exec(msg_stmt).first()
+        
+        preview = "Mulai percakapan baru"
+        if last_msg:
+            content = last_msg.content.strip()
+            preview = content[:45] + ("..." if len(content) > 45 else "")
+            
+        results.append({
+            "session_id": p.session_id,
+            "child_name": p.name or "Anak Tanpa Nama",
+            "last_message_preview": preview,
+            "created_at": None  # Bisa diisi jika ada field created_at di DB
+        })
+    return results
+
+@app.get("/sessions/{session_id}/messages")
+def get_session_messages(session_id: str, session: Session = Depends(get_session)):
+    """Ambil semua pesan untuk session tertentu."""
+    stmt = select(ChatMessage).where(
+        ChatMessage.session_id == session_id
+    ).order_by(ChatMessage.id)
+    messages = session.exec(stmt).all()
+    
+    return [
+        {"id": m.id, "role": m.role, "content": m.content}
+        for m in messages
+    ]
