@@ -105,70 +105,14 @@ export const sendMessage = async (sessionId, message, onChunk) => {
   return { response: fullResponse, sources };
 };
 
-// export const sendMessage = async (sessionId, message, onChunk) => {
-//   const res = await fetch(`${API_URL}/chat`, {
-//     method: "POST",
-//     headers: { "Content-Type": "application/json", "X-Session-ID": sessionId },
-//     body: JSON.stringify({ message }),
-//   });
-//   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+export const getSessions = async () => {
+  const res = await fetch(`${API_URL}/sessions`);
+  if (!res.ok) throw new Error("Gagal memuat riwayat chat");
+  return res.json();
+};
 
-//   const reader = res.body.getReader();
-//   const decoder = new TextDecoder();
-//   let buffer = "";
-//   let fullResponse = "";
-//   let sources = [];
-//   let lastChar = ""; // ✅ Track karakter terakhir untuk auto-space
-
-//   while (true) {
-//     const { done, value } = await reader.read();
-//     if (done) break;
-
-//     buffer += decoder.decode(value, { stream: true });
-//     const lines = buffer.split("\n");
-//     buffer = lines.pop();
-
-//     for (const line of lines) {
-//       // ✅ SKIP baris kosong
-//       if (line === "") continue;
-      
-//       let data = "";
-      
-//       // ✅ Parse SSE format " {content}"
-//       if (line.startsWith(" ")) {
-//         data = line.slice(6); // Hapus prefix " "
-//       } else {
-//         // ✅ Fallback: tangkap line tanpa prefix
-//         data = line;
-//       }
-      
-//       // ✅ SKIP jika data kosong
-//       if (data === "") continue;
-
-//       const clean = data.trim();
-//       if (clean === "[DONE]") break;
-//       if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
-//       if (clean.startsWith("[SOURCES] ")) {
-//         try { sources = JSON.parse(clean.slice(10)); } catch { sources = []; }
-//         continue;
-//       }
-      
-//       // ✅ AUTO-SPACE: Tambah spasi setelah tanda baca jika token berikutnya tidak dimulai spasi
-//       if (lastChar && /[!.,:;]/.test(lastChar) && data && !data.startsWith(" ") && !data.startsWith("\n")) {
-//         fullResponse += " ";
-//         onChunk(" ");
-//       }
-      
-//       // ✅ Tambahkan ke response
-//       fullResponse += data;
-//       onChunk(data);
-      
-//       // ✅ Update lastChar dengan karakter terakhir dari data
-//       if (data) {
-//         lastChar = data[data.length - 1];
-//       }
-//     }
-//   }
-
-//   return { response: fullResponse, sources };
-// };
+export const getMessages = async (sessionId) => {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/messages`);
+  if (!res.ok) throw new Error("Gagal memuat pesan");
+  return res.json();
+};
