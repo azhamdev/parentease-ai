@@ -44,7 +44,7 @@ const Sidebar = ({ sessionId, onNewSession }) => {
             <User className="w-4 h-4" />
           </div>
           <div className="text-sm font-medium text-text-main">
-            Orang Tua Baru
+            Orangtua Baru
           </div>
         </button>
       </div> */}

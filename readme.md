@@ -2,7 +2,11 @@
 
 1. uv run -m scripts.ingest_pdfs -> for the first time
 2. make dev
-3. npm run dev (untuk folder frontend)
+
+### frontend
+1. rm -rf node_modules package-lock.json
+2. npm install
+3. npm run dev
 
 ### redis
 1. redis-server --daemonize yes (running redis)
