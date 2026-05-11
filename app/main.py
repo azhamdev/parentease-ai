@@ -1,3 +1,4 @@
+from app.utils.schemas import SessionListItem
 import pathlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header
@@ -104,13 +105,6 @@ async def chat_endpoint_streaming(
 @app.post("/tools/vaccine-schedule", response_model=VaccineScheduleResponse)
 def vaccine_schedule_endpoint(request: VaccineScheduleRequest):
     return calculate_vaccine_schedule(request)
-        
-class SessionListItem(BaseModel):
-    session_id: str
-    child_name: str | None
-    last_message_preview: str
-    created_at: str | None
-
 
 @app.get("/sessions", response_model=list[SessionListItem])
 def list_sessions(session: Session = Depends(get_session)):
