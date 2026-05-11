@@ -28,3 +28,9 @@ class WelcomeContext(BaseModel):
 
 class SessionCreate(BaseModel):
     context: WelcomeContext
+
+class SessionListItem(BaseModel):
+    session_id: str
+    child_name: str | None
+    last_message_preview: str
+    created_at: str | None
