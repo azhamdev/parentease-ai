@@ -448,9 +448,11 @@ collection          -> pediatric_guidelines
 ```env
 OPEN_ROUTER_API_KEY=your_openrouter_api_key_here
 MISTRAL_API_KEY=your_mistral_api_key_here
+DATABASE_URL=sqlite:///./parentease.db
 ```
 
 - Catatan: kode saat ini masih memakai `OPEN_ROUTER_API_KEY` untuk embedding dan chat model melalui OpenRouter. `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode existing.
+- `DATABASE_URL` default ke SQLite lokal `sqlite:///./parentease.db`.
 
 ### Vaccine Schedule Tool
 
@@ -514,10 +516,10 @@ return warnings and source metadata
 
 ### API Endpoint
 
-- Menambahkan endpoint FastAPI untuk vaccine tool:
+- Menambahkan endpoint FastAPI untuk vaccine tool, mengikuti routing baru backend:
 
 ```http
-POST /tools/vaccine-schedule
+POST /api/v1/tools/vaccine-schedule
 ```
 
 - Contoh request:
@@ -539,7 +541,7 @@ RV1
 PCV1
 ```
 
-- Endpoint ini sengaja belum disambungkan langsung ke agent/chat agar tidak konflik dengan pekerjaan M1. M1 bisa consume endpoint ini lewat HTTP, atau nanti M3 bisa bungkus sebagai MCP tool.
+- Endpoint ini tetap bisa dipanggil langsung untuk test/debug. Selain itu, chat agent sekarang sudah bisa memakai hasil tool secara otomatis ketika intent vaksin terdeteksi dan profil anak punya `birth_date`.
 
 ### Tests
 
@@ -558,13 +560,13 @@ tests/test_tools_endpoint.py
 - Test yang sudah diverifikasi:
 
 ```bash
-.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py
+.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py tests/test_red_flags.py
 ```
 
 - Hasil terakhir:
 
 ```text
-Ran 10 tests
+Ran 14 tests
 OK
 ```
 
@@ -585,10 +587,482 @@ RAG PDF umum            : siap secara lokal setelah ingest
 Chroma collection       : pediatric_guidelines, 434 chunks lokal
 Vaccine schedule tool   : siap dan tested
 Vaccine endpoint        : siap dan tested
-Agent chat              : masih memakai search_medical_guidelines dan calculate_z_score lama
+Agent chat              : pre-retrieve RAG, auto vaccine schedule, red flag handler
 calculate_z_score       : masih placeholder
-Session/history         : belum dikerjakan di M3
+Session/history         : tersedia dari merge M1, dipakai untuk profil/chat
+Vaccine history         : tersedia via endpoint profile vaccines
 MCP server              : belum dibuat
 Redis/Celery            : belum dibuat
-PostgreSQL/Alembic      : belum dibuat
+Alembic migration       : initial schema tersedia
+PostgreSQL              : belum dikonfigurasi penuh
 ```
+
+## M3 MVP Specs Lengkap
+
+Bagian ini adalah spec operasional terbaru setelah merge frontend/backend dan implementasi M3 yang sudah masuk di working tree. Pakai bagian ini sebagai acuan demo dan handoff ke M1/M2.
+
+### Tujuan MVP M3
+
+M3 menyediakan fondasi backend yang membuat chat parenting bisa memakai data terstruktur dan knowledge base lokal:
+
+```text
+child profile
+  -> chat context
+  -> red flag guardrail
+  -> Chroma guideline retrieval
+  -> deterministic vaccine schedule
+  -> response streaming + sources
+```
+
+Scope MVP M3 yang sudah dikerjakan:
+
+- Tool deterministic `calculate_vaccine_schedule()`.
+- Endpoint tool `/api/v1/tools/vaccine-schedule`.
+- Endpoint riwayat vaksin per profile.
+- Integrasi chat agar pertanyaan vaksin otomatis memakai tool.
+- Pre-retrieve Chroma untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
+- Basic medical red flag handler.
+- Date/number normalization untuk form frontend lokal Indonesia.
+
+Scope yang sengaja belum menjadi MVP:
+
+- PostgreSQL production dan Alembic migration.
+- Redis/Celery worker.
+- MCP server transport.
+- Growth chart/z-score valid WHO.
+- Intent classifier berbasis model khusus.
+
+### Runtime Lokal
+
+Urutan jalan lokal:
+
+```bash
+uv sync
+cp .env.example .env
+uv run -m scripts.ingest_pdfs
+make dev
+```
+
+Frontend React dijalankan dari folder frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Environment yang dibutuhkan:
+
+```env
+OPEN_ROUTER_API_KEY=...
+MISTRAL_API_KEY=...
+DATABASE_URL=sqlite:///./parentease.db
+```
+
+Catatan saat ini:
+
+- `OPEN_ROUTER_API_KEY` dipakai untuk chat model dan embedding melalui OpenRouter.
+- `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode saat ini.
+- `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya SQLite.
+- `chroma_db/` tidak di-commit, jadi setiap developer perlu ingest PDF sendiri.
+- `parentease.db` adalah SQLite lokal dan tidak di-commit.
+
+### Alembic Migration
+
+Alembic sudah tersedia untuk mengelola schema database.
+
+File yang ditambahkan:
+
+```text
+alembic.ini
+alembic/env.py
+alembic/script.py.mako
+alembic/versions/20260512_0001_initial_schema.py
+```
+
+Dependency:
+
+```text
+alembic>=1.18.4
+```
+
+Command migration:
+
+```bash
+uv run alembic upgrade head
+uv run alembic current
+```
+
+`Makefile` sekarang menjalankan migration sebelum dev server:
+
+```bash
+make dev
+```
+
+Flow `make dev`:
+
+```text
+uv run alembic upgrade head
+  -> uv run uvicorn app.main:app --reload
+```
+
+Initial migration dibuat defensif. Kalau developer sudah punya `parentease.db` dari `create_all`, migration tidak gagal karena tabel sudah ada; Alembic tetap mencatat revision `20260512_0001`.
+
+### Data Sources
+
+Knowledge base lokal:
+
+```text
+data/asi_guidelines.pdf
+data/buku_kia_2024.pdf
+```
+
+Chroma collection:
+
+```text
+path       : ./chroma_db
+collection : pediatric_guidelines
+total      : 434 chunks lokal
+```
+
+RAG source rule:
+
+- PDF dipakai untuk jawaban edukasi umum seperti ASI, MPASI, posisi menyusui, dan guideline KIA.
+- Vaccine schedule tidak dihitung dari Chroma setiap request. Jadwal vaksin dibuat deterministic dari tabel terstruktur di `app/tools/vaccine_schedule.py`.
+- Response frontend menerima marker `[SOURCES]` untuk menampilkan dokumen sumber.
+
+### Database Model MVP
+
+Model yang relevan sekarang ada di `app/models.py`.
+
+```text
+ChildProfile
+  id
+  session_id
+  birth_date
+  gender
+  name
+  weight_kg
+  height_cm
+  topic
+  created_at
+
+ChatMessage
+  id
+  session_id
+  role
+  content
+  created_at
+
+VaccineRecord
+  id
+  session_id
+  vaccine_code
+  date_given
+  notes
+  created_at
+```
+
+Relasi MVP masih berbasis `session_id`, bukan foreign key database ketat. Ini cukup untuk local MVP, tetapi untuk production perlu migration dan constraint.
+
+### Child Profile Contract
+
+Create profile:
+
+```http
+POST /api/v1/profiles/
+```
+
+Request:
+
+```json
+{
+  "tanggal_lahir": "2026-03-08",
+  "gender": "P",
+  "nama_anak": "Gee",
+  "berat_badan_kg": 5.8,
+  "tinggi_badan_cm": 59
+}
+```
+
+Update profile:
+
+```http
+PATCH /api/v1/profiles/{session_id}
+```
+
+Tanggal diterima dalam dua format:
+
+```text
+YYYY-MM-DD
+DD/MM/YYYY
+```
+
+Frontend juga menormalisasi:
+
+```text
+08/03/2026 -> 2026-03-08
+5,8        -> 5.8
+```
+
+Get profile:
+
+```http
+GET /api/v1/profiles/{session_id}
+```
+
+### Vaccine History Contract
+
+List riwayat vaksin:
+
+```http
+GET /api/v1/profiles/{session_id}/vaccines
+```
+
+Tambah riwayat vaksin:
+
+```http
+POST /api/v1/profiles/{session_id}/vaccines
+```
+
+Request:
+
+```json
+{
+  "vaccine_code": "BCG",
+  "date_given": "2026-04-08",
+  "notes": "Diberikan di puskesmas"
+}
+```
+
+Delete riwayat vaksin:
+
+```http
+DELETE /api/v1/profiles/{session_id}/vaccines/{record_id}
+```
+
+Riwayat ini dipakai otomatis oleh chat. Saat user bertanya jadwal vaksin, `chat.py` mengambil `VaccineRecord` dan mengirimnya sebagai `completed_vaccines` ke streaming agent.
+
+### Vaccine Schedule Tool Spec
+
+Endpoint:
+
+```http
+POST /api/v1/tools/vaccine-schedule
+```
+
+Request schema:
+
+```json
+{
+  "birth_date": "2026-03-08",
+  "as_of_date": "2026-05-12",
+  "country": "ID",
+  "completed_vaccines": [
+    {
+      "vaccine_code": "BCG",
+      "date_given": "2026-04-08"
+    }
+  ],
+  "include_regional_vaccines": false
+}
+```
+
+Response schema:
+
+```json
+{
+  "tool_name": "calculate_vaccine_schedule",
+  "status": "ok",
+  "age_days": 65,
+  "age_months": 2,
+  "due_now": [],
+  "upcoming": [],
+  "overdue": [],
+  "completed": [],
+  "warnings": [],
+  "sources": [
+    {
+      "title": "Buku Kesehatan Ibu dan Anak 2024",
+      "page": 124,
+      "year": 2024
+    }
+  ]
+}
+```
+
+Status:
+
+```text
+ok               -> birth_date valid dan hasil dihitung
+needs_more_input -> birth_date kosong
+error            -> reserved untuk error terstruktur
+```
+
+Jadwal ID yang dimodelkan:
+
+```text
+0-24 jam : HB0
+1 bulan  : BCG, OPV1
+2 bulan  : DPT-HB-Hib 1, OPV2, RV1, PCV1
+3 bulan  : DPT-HB-Hib 2, OPV3, RV2, PCV2
+4 bulan  : DPT-HB-Hib 3, OPV4, IPV1, RV3
+9 bulan  : MR1, IPV2
+10 bulan : JE, optional regional
+12 bulan : PCV3
+18 bulan : DPT-HB-Hib lanjutan, MR lanjutan
+```
+
+Business rules:
+
+- Jika `completed_vaccines` berisi kode vaksin, item tersebut masuk `completed` dan tidak muncul di `due_now`.
+- `JE` hanya muncul kalau `include_regional_vaccines=true`.
+- Tool memberi warning untuk batas usia rotavirus dan catatan konsultasi tenaga kesehatan.
+- Tool tidak membuat diagnosis dan tidak menggantikan keputusan dokter.
+
+### Chat Agent Integration Spec
+
+Endpoint chat:
+
+```http
+POST /api/v1/chat/
+Header: X-Session-ID: {session_id}
+```
+
+Request:
+
+```json
+{
+  "message": "Jadwal vaksinasi bayi saya apa?"
+}
+```
+
+Flow backend:
+
+```text
+receive message
+  -> save user ChatMessage
+  -> fetch ChildProfile by X-Session-ID
+  -> fetch VaccineRecord by session_id
+  -> build child_context
+  -> stream_chat_response()
+```
+
+Flow di `stream_chat_response()`:
+
+```text
+build base prompt
+  -> inject child profile if available
+  -> detect red flag
+  -> if red flag: return urgent safety response
+  -> if medical keyword: pre-retrieve Chroma
+  -> if vaccine keyword + birth_date: calculate vaccine schedule
+  -> call LLM streaming
+  -> if LLM function-call search_medical_guidelines: execute it
+  -> append [SOURCES]
+  -> save assistant ChatMessage
+```
+
+Log yang diharapkan:
+
+```text
+ChromaDB has 434 documents
+Pre-retrieved 3 source(s)
+Calculated vaccine schedule from child profile
+No tool calls detected - direct response
+Sending ... pre-retrieved source(s) to frontend
+```
+
+Catatan: `No tool calls detected` hanya berarti LLM tidak memanggil function tool tambahan. Chroma tetap bisa sudah dipakai lewat pre-retrieve.
+
+### Red Flag Guardrail Spec
+
+File:
+
+```text
+app/tools/red_flags.py
+```
+
+Deteksi tanda bahaya MVP:
+
+```text
+kejang
+sesak / sulit napas / napas cepat
+bibir biru / kebiruan
+tidak mau minum / tidak mau menyusu
+dehidrasi
+lemas sekali
+tidak sadar
+muntah terus
+demam pada bayi di bawah 3 bulan
+suhu >= 40 C
+```
+
+Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa.
+
+### Frontend Contract
+
+Frontend tidak perlu memanggil vaccine tool langsung untuk flow chat. Yang wajib:
+
+- Simpan `session_id` setelah welcome form.
+- Kirim `X-Session-ID` setiap chat.
+- Kirim tanggal lahir dalam `YYYY-MM-DD` jika memungkinkan.
+- Tampilkan `[SOURCES]` sebagai daftar sumber di bawah jawaban.
+
+Endpoint tool tetap tersedia untuk debug/admin/test manual.
+
+### Test Plan
+
+Backend tests:
+
+```bash
+.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py tests/test_red_flags.py
+```
+
+Type check spot check:
+
+```bash
+uvx ty check app/services/agent/streaming.py app/api/v1/endpoints/child_profiles.py
+```
+
+Frontend build:
+
+```bash
+cd frontend
+npm run build
+```
+
+Manual test cases:
+
+```text
+ASI eksklusif sampai kapan?
+  -> source dari asi_guidelines / Buku KIA muncul
+
+Kapan mulai MPASI?
+  -> RAG Chroma terpanggil dan source muncul
+
+Jadwal vaksinasi bayi
+  -> jika X-Session-ID punya profile birth_date, vaccine schedule dihitung
+
+Bayi saya demam 39 dan usianya 2 bulan
+  -> red flag response, arahkan ke fasilitas kesehatan
+
+Tambah BCG ke /profiles/{session_id}/vaccines
+  -> BCG tidak lagi muncul sebagai due_now
+```
+
+### Batasan dan Next Step M3
+
+Yang masih perlu diselesaikan setelah MVP:
+
+- Alembic migration supaya perubahan schema tidak perlu reset SQLite manual.
+- PostgreSQL config untuk production-like environment.
+- MCP server wrapper untuk `calculate_vaccine_schedule`.
+- Redis/Celery kalau ingestion/upload dibuat async.
+- Z-score/growth chart berbasis WHO, bukan placeholder.
+- Intent classifier yang lebih robust daripada keyword.
+- Pemisahan source type:
+  - guideline edukasi dari RAG,
+  - source rule jadwal vaksin,
+  - source dari tool calculation.
+- Chat history beberapa pesan terakhir perlu dimasukkan ke prompt untuk follow-up yang lebih kuat.
