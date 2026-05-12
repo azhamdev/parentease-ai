@@ -154,7 +154,7 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                     required
                     value={formData.tanggal_lahir}
                     onChange={handleChange}
-                    className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition"
+                    className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary text-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-100"
                   />
                 </div>
 
