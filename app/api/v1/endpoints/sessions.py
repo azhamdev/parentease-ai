@@ -1,54 +1,74 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
-from app.models import engine, ChildProfile
-from app.utils.schemas import SessionCreate
-from app.services.agent.orchestrator import create_session
+from app.models import ChildProfile, ChatMessage
+from app.database import get_session
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(tags=["sessions"])
 
-@router.post("/", status_code=201)
-async def init_session(payload: SessionCreate):
+@router.get("/sessions", response_model=list[dict])
+async def list_sessions(db_session: Session = Depends(get_session)):
+    """Ambil semua session untuk sidebar riwayat chat."""
     try:
-        # 1. Simpan ke Redis (Async)
-        session_id, _ = await create_session(payload)
-
-        # 2. Prepare data untuk SQLite (map field names)
-        ctx = payload.context.model_dump(mode='json')
-        db_data = {
-            "session_id": session_id,
-            "birth_date": ctx["tanggal_lahir"], 
-            "gender": ctx["gender"],
-            "name": ctx.get("nama_anak"),
-            "weight_kg": ctx.get("berat_badan_kg"),
-            "height_cm": ctx.get("tinggi_badan_cm"),
-            "topic": ctx.get("topik"),
-        }
-
-        # 3. Upsert ke SQLite
-        with Session(engine) as db:
-            statement = select(ChildProfile).where(ChildProfile.session_id == session_id)
-            existing = db.exec(statement).first()
-
-            if existing:
-                # Update existing
-                for key, value in db_data.items():
-                    if key != "session_id":  # session_id adalah PK reference, jangan di-update
-                        setattr(existing, key, value)
-                db.add(existing)
-            else:
-                # Insert new
-                new_profile = ChildProfile(**db_data)
-                db.add(new_profile)
+        stmt = select(ChildProfile).order_by(ChildProfile.created_at.desc())
+        profiles = db_session.exec(stmt).all()
+        
+        results = []
+        for p in profiles:
+            msg_stmt = select(ChatMessage).where(
+                ChatMessage.session_id == p.session_id,
+                ChatMessage.role == "user"
+            ).order_by(ChatMessage.created_at.desc()).limit(1)
+            last_msg = db_session.exec(msg_stmt).first()
             
-            db.commit()
-
-        return {
-            "session_id": session_id,
-            "status": "initialized",
-            "message": "Session berhasil dibuat"
-        }
+            preview = "Mulai percakapan baru"
+            if last_msg:
+                content = last_msg.content.strip()
+                preview = content[:45] + ("..." if len(content) > 45 else "")
+            
+            results.append({
+                "session_id": p.session_id,
+                "child_name": p.name or "Anak Tanpa Nama",
+                "last_message_preview": preview,
+                "created_at": p.created_at.isoformat() if p.created_at else None
+            })
+        
+        return results
     except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        import logging
+        logging.error(f"Error listing sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(
+    session_id: str,
+    db_session: Session = Depends(get_session)
+):
+    """Ambil semua pesan untuk session tertentu."""
+    try:
+        profile_stmt = select(ChildProfile).where(ChildProfile.session_id == session_id)
+        profile = db_session.exec(profile_stmt).first()
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail="Session tidak ditemukan")
+        
+        stmt = select(ChatMessage).where(
+            ChatMessage.session_id == session_id
+        ).order_by(ChatMessage.created_at.asc())
+        
+        messages = db_session.exec(stmt).all()
+        
+        return [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None
+            }
+            for m in messages
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"Error getting messages for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
