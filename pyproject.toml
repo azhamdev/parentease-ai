@@ -3,6 +3,7 @@ name = "parentease-ai"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.18.4",
     "chonkie>=1.0.4",
     "chromadb>=1.5.9",
     "fastapi>=0.136.1",
