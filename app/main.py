@@ -3,12 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from scalar_fastapi import get_scalar_api_reference
-from .tools.schemas import VaccineScheduleRequest, VaccineScheduleResponse
-from .tools.vaccine_schedule import calculate_vaccine_schedule
-from .models import create_db_and_tables
+from .database import create_db_and_tables
 from app.api.v1.endpoints import sessions
 from app.api.v1.endpoints import child_profiles
 from app.api.v1.endpoints import chat
+from app.api.v1.endpoints import tools
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -34,6 +33,7 @@ app.add_middleware(
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
 app.include_router(child_profiles.router, prefix="/api/v1", tags=["child-profiles"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(tools.router, prefix="/api/v1", tags=["tools"])
 
 
 @app.get("/", include_in_schema=False)
@@ -48,7 +48,3 @@ def scalar_html():
         openapi_url=app.openapi_url,
         title=app.title,
     )
-
-@app.post("/tools/vaccine-schedule", response_model=VaccineScheduleResponse)
-def vaccine_schedule_endpoint(request: VaccineScheduleRequest):
-    return calculate_vaccine_schedule(request)
