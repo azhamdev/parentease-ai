@@ -1,4 +1,7 @@
-migrate:
+db:
+	docker compose up -d postgres
+
+migrate: db
 	uv run alembic upgrade head
 
 dev: migrate

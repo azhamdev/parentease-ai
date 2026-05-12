@@ -448,11 +448,11 @@ collection          -> pediatric_guidelines
 ```env
 OPEN_ROUTER_API_KEY=your_openrouter_api_key_here
 MISTRAL_API_KEY=your_mistral_api_key_here
-DATABASE_URL=sqlite:///./parentease.db
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
 ```
 
 - Catatan: kode saat ini masih memakai `OPEN_ROUTER_API_KEY` untuk embedding dan chat model melalui OpenRouter. `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode existing.
-- `DATABASE_URL` default ke SQLite lokal `sqlite:///./parentease.db`.
+- `DATABASE_URL` default project sekarang mengarah ke PostgreSQL lokal via Docker Compose.
 
 ### Vaccine Schedule Tool
 
@@ -594,7 +594,7 @@ Vaccine history         : tersedia via endpoint profile vaccines
 MCP server              : belum dibuat
 Redis/Celery            : belum dibuat
 Alembic migration       : initial schema tersedia
-PostgreSQL              : belum dikonfigurasi penuh
+PostgreSQL              : tersedia via Docker Compose
 ```
 
 ## M3 MVP Specs Lengkap
@@ -626,7 +626,6 @@ Scope MVP M3 yang sudah dikerjakan:
 
 Scope yang sengaja belum menjadi MVP:
 
-- PostgreSQL production dan Alembic migration.
 - Redis/Celery worker.
 - MCP server transport.
 - Growth chart/z-score valid WHO.
@@ -639,6 +638,8 @@ Urutan jalan lokal:
 ```bash
 uv sync
 cp .env.example .env
+docker compose up -d postgres
+uv run alembic upgrade head
 uv run -m scripts.ingest_pdfs
 make dev
 ```
@@ -656,16 +657,16 @@ Environment yang dibutuhkan:
 ```env
 OPEN_ROUTER_API_KEY=...
 MISTRAL_API_KEY=...
-DATABASE_URL=sqlite:///./parentease.db
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
 ```
 
 Catatan saat ini:
 
 - `OPEN_ROUTER_API_KEY` dipakai untuk chat model dan embedding melalui OpenRouter.
 - `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode saat ini.
-- `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya SQLite.
+- `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya PostgreSQL Docker.
 - `chroma_db/` tidak di-commit, jadi setiap developer perlu ingest PDF sendiri.
-- `parentease.db` adalah SQLite lokal dan tidak di-commit.
+- `parentease.db` adalah sisa SQLite lokal lama dan tidak dipakai jika `DATABASE_URL` mengarah ke PostgreSQL.
 
 ### Alembic Migration
 
@@ -689,6 +690,7 @@ alembic>=1.18.4
 Command migration:
 
 ```bash
+docker compose up -d postgres
 uv run alembic upgrade head
 uv run alembic current
 ```
@@ -707,6 +709,18 @@ uv run alembic upgrade head
 ```
 
 Initial migration dibuat defensif. Kalau developer sudah punya `parentease.db` dari `create_all`, migration tidak gagal karena tabel sudah ada; Alembic tetap mencatat revision `20260512_0001`.
+
+PostgreSQL local disediakan lewat:
+
+```text
+docker-compose.yml
+service: postgres
+image  : postgres:16-alpine
+db     : parentease
+user   : postgres
+pass   : postgres
+port   : 5432
+```
 
 ### Data Sources
 
@@ -1055,8 +1069,7 @@ Tambah BCG ke /profiles/{session_id}/vaccines
 
 Yang masih perlu diselesaikan setelah MVP:
 
-- Alembic migration supaya perubahan schema tidak perlu reset SQLite manual.
-- PostgreSQL config untuk production-like environment.
+- Production/staging PostgreSQL credential management.
 - MCP server wrapper untuk `calculate_vaccine_schedule`.
 - Redis/Celery kalau ingestion/upload dibuat async.
 - Z-score/growth chart berbasis WHO, bukan placeholder.
