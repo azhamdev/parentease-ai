@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { createSession, updateChildProfile, getChildProfile } from '../services/api';
 import { Baby, Loader2, X } from 'lucide-react';
 
-const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId }) => {
+const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewSession }) => {
   const [formData, setFormData] = useState({
     tanggal_lahir: '',
     gender: '',
@@ -15,6 +15,8 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isLoadingData, setIsLoadingData] = useState(false);
+
+  console.log("initialData", initialData)
 
   const loadData = async () => {
     // Jika ada initialData dari parent, langsung pre-fill (mode edit dari ChatInterface)
@@ -49,6 +51,15 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId }) => {
       } finally {
         setIsLoadingData(false);
       }
+    } else {
+      setFormData({
+        tanggal_lahir: '',
+        gender: '',
+        nama_anak: '',
+        berat_badan_kg: '',
+        tinggi_badan_cm: '',
+        topik: ''
+      });
     }
   };
 
