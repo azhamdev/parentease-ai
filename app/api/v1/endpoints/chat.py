@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from app.models import ChatMessage, ChildProfile
+from app.models import ChatMessage, ChildProfile, VaccineRecord
 from app.database import get_session
 from app.services.agent.streaming import stream_chat_response
 from pydantic import BaseModel
@@ -38,6 +38,17 @@ async def chat_endpoint_streaming(
         profile = session.exec(stmt).first()
         if profile:
             child_data = profile.model_dump()
+            vaccine_stmt = select(VaccineRecord).where(
+                VaccineRecord.session_id == x_session_id
+            )
+            vaccine_records = session.exec(vaccine_stmt).all()
+            child_data["completed_vaccines"] = [
+                {
+                    "vaccine_code": record.vaccine_code,
+                    "date_given": record.date_given.isoformat() if record.date_given else None,
+                }
+                for record in vaccine_records
+            ]
 
     # Streaming generator
     async def event_generator():
