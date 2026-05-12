@@ -1,20 +1,39 @@
 
 const API_URL = "http://localhost:8000/api/v1";
 
+const normalizeDate = (value) => {
+  if (!value) return value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const slashMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, day, month, year] = slashMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  return value;
+};
+
+const parseOptionalNumber = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  return parseFloat(String(value).replace(",", "."));
+};
+
 
 export const createSession = async (data) => {
+  const tanggalLahir = normalizeDate(data.tanggal_lahir);
   // 1. Validasi wajib sebelum request
-  if (!data.tanggal_lahir || !data.gender) {
+  if (!tanggalLahir || !data.gender) {
     throw new Error("Tanggal lahir dan gender wajib diisi");
   }
   
   // 2. Bangun payload bersih
   const payload = {
-    tanggal_lahir: data.tanggal_lahir, // Harus format "YYYY-MM-DD"
+    tanggal_lahir: tanggalLahir,
     gender: data.gender.toUpperCase(), // "L" atau "P"
     nama_anak: data.nama_anak || undefined,
-    berat_badan_kg: data.berat_badan_kg ? parseFloat(data.berat_badan_kg) : undefined,
-    tinggi_badan_cm: data.tinggi_badan_cm ? parseFloat(data.tinggi_badan_cm) : undefined,
+    berat_badan_kg: parseOptionalNumber(data.berat_badan_kg),
+    tinggi_badan_cm: parseOptionalNumber(data.tinggi_badan_cm),
     topik: data.topik || undefined,
   };
   
@@ -68,7 +87,8 @@ export const sendMessage = async (sessionId, message, onChunk) => {
       if (line.startsWith("data: ")) {
         data = line.slice(6); // Hapus prefix "data: "
       } else {
-        // Fallback untuk kompatibilitas
+        // Fallback untuk kompatibilitas, termasuk marker [SOURCES] yang bisa
+        // muncul di baris berikutnya setelah token newline.
         data = line;
       }
       
@@ -78,8 +98,8 @@ export const sendMessage = async (sessionId, message, onChunk) => {
       const clean = data.trim();
       if (clean === "[DONE]") break;
       if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
-      if (clean.startsWith("[SOURCES] ")) {
-        try { sources = JSON.parse(clean.slice(10)); } catch { sources = []; }
+      if (clean.startsWith("[SOURCES]")) {
+        try { sources = JSON.parse(clean.replace(/^\[SOURCES\]\s*/, "")); } catch { sources = []; }
         continue;
       }
       
@@ -100,28 +120,39 @@ export const sendMessage = async (sessionId, message, onChunk) => {
     }
   }
 
+  const inlineSourcesMatch = fullResponse.match(/\[SOURCES\]\s*(\[[\s\S]*?\])/);
+  if (inlineSourcesMatch) {
+    try {
+      sources = JSON.parse(inlineSourcesMatch[1]);
+      fullResponse = fullResponse.replace(/\[SOURCES\]\s*\[[\s\S]*?\]/, "").trim();
+    } catch {
+      sources = [];
+    }
+  }
+
   return { response: fullResponse, sources };
 };
 
 export const updateChildProfile = async (sessionId, data) => {
+  const tanggalLahir = normalizeDate(data.tanggal_lahir);
   // Validasi format tanggal
-  if (!data.tanggal_lahir) {
+  if (!tanggalLahir) {
     throw new Error("Tanggal lahir wajib diisi");
   }
   
   // Pastikan format YYYY-MM-DD
   const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-  if (!datePattern.test(data.tanggal_lahir)) {
+  if (!datePattern.test(tanggalLahir)) {
     throw new Error("Format tanggal lahir harus YYYY-MM-DD");
   }
   
   // Bangun payload bersih
   const payload = {
     nama_anak: data.nama_anak?.trim() || undefined,
-    tanggal_lahir: data.tanggal_lahir, // Pastikan format YYYY-MM-DD
+    tanggal_lahir: tanggalLahir,
     gender: data.gender?.toUpperCase() || undefined,
-    berat_badan_kg: data.berat_badan_kg ? parseFloat(data.berat_badan_kg) : undefined,
-    tinggi_badan_cm: data.tinggi_badan_cm ? parseFloat(data.tinggi_badan_cm) : undefined,
+    berat_badan_kg: parseOptionalNumber(data.berat_badan_kg),
+    tinggi_badan_cm: parseOptionalNumber(data.tinggi_badan_cm),
   };
   
   console.log("📤 Update payload:", JSON.stringify(payload, null, 2));
