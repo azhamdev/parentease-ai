@@ -65,11 +65,25 @@ function App() {
     localStorage.removeItem('parentease_session');
   };
 
+  const handleCloseForm = () => {
+    setShowForm(false);
+  };
+
   const handleEditBabyData = () => {
+    if (!sessionId) return;
     setShowForm(true);
   };
 
-  const handleCloseForm = () => {
+  const handleFormSuccess = (newSessionIdOrData, data) => {
+    const isEdit = typeof newSessionIdOrData !== 'string';
+    
+    if (isEdit) {
+      setBabyData(prev => ({ ...prev, ...data }));
+    } else {
+      setSessionId(newSessionIdOrData);
+      setBabyData(data);
+      localStorage.setItem('parentease_session', newSessionIdOrData);
+    }
     setShowForm(false);
   };
 
@@ -94,6 +108,7 @@ function App() {
             onClose={handleCloseForm}
             initialData={babyData}
             sessionId={sessionId}
+            onSuccess={handleFormSuccess}
           />
         ) : (
           <ChatInterface 
