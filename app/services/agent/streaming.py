@@ -1,6 +1,6 @@
 import os
 import json
-from typing import AsyncGenerator, cast
+from typing import AsyncGenerator, Callable, cast
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from datetime import date
@@ -152,6 +152,7 @@ def _format_vaccine_schedule_result(result) -> str:
 async def stream_chat_response(
     user_message: str,
     child_context: dict | None = None,
+    tool_audit_callback: Callable[[dict], None] | None = None,
 ) -> AsyncGenerator[str, None]:
     async_client = get_async_client()
     today = date.today()
@@ -286,6 +287,23 @@ async def stream_chat_response(
                         completed_vaccines=completed_vaccines,
                     )
                 )
+                if tool_audit_callback:
+                    tool_audit_callback(
+                        {
+                            "tool_name": vaccine_result.tool_name,
+                            "status": vaccine_result.status,
+                            "input_payload": {
+                                "birth_date": parsed_birth_date.isoformat(),
+                                "as_of_date": today.isoformat(),
+                                "completed_vaccines": completed_vaccines,
+                            },
+                            "output_payload": vaccine_result.model_dump(mode="json"),
+                            "sources": [
+                                source.model_dump(mode="json")
+                                for source in vaccine_result.sources
+                            ],
+                        }
+                    )
                 print("💉 Calculated vaccine schedule from child profile")
                 base_prompt += (
                     "\n\n💉 HASIL TOOL calculate_vaccine_schedule:\n"

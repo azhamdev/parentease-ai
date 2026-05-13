@@ -16,6 +16,7 @@ class CompletedVaccine(BaseModel):
 
 
 class VaccineScheduleRequest(BaseModel):
+    session_id: str | None = None
     birth_date: date | None = None
     as_of_date: date = Field(default_factory=date.today)
     country: str = "ID"
@@ -49,4 +50,3 @@ class VaccineScheduleResponse(BaseModel):
     completed: list[VaccineScheduleItem] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     sources: list[VaccineScheduleSource] = Field(default_factory=list)
-

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from app.models import ChatMessage, ChildProfile, VaccineRecord
+from app.models import ChatMessage, ChildProfile, ToolCall, VaccineRecord
 from app.database import get_session
 from app.services.agent.streaming import stream_chat_response
 from pydantic import BaseModel
@@ -53,10 +53,24 @@ async def chat_endpoint_streaming(
     # Streaming generator
     async def event_generator():
         full_response = ""
+
+        def audit_tool_call(payload: dict) -> None:
+            tool_call = ToolCall(
+                session_id=x_session_id,
+                tool_name=payload["tool_name"],
+                status=payload["status"],
+                input_payload=payload.get("input_payload", {}),
+                output_payload=payload.get("output_payload", {}),
+                sources=payload.get("sources", []),
+            )
+            session.add(tool_call)
+            session.commit()
+
         try:
             async for token in stream_chat_response(
                 user_message=request.message,
-                child_context=child_data
+                child_context=child_data,
+                tool_audit_callback=audit_tool_call,
             ):
                 # Skip empty tokens
                 if not token or token.strip() == "":

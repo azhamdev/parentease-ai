@@ -1,8 +1,11 @@
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
+from app.database import engine
 from app.main import app
+from app.models import ToolCall
 
 
 class ToolsEndpointTest(unittest.TestCase):
@@ -38,6 +41,33 @@ class ToolsEndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "needs_more_input")
+
+    def test_vaccine_schedule_endpoint_audits_tool_call_with_session_id(self):
+        session_id = "test-tool-audit-session"
+        response = self.client.post(
+            "/api/v1/tools/vaccine-schedule",
+            json={
+                "session_id": session_id,
+                "birth_date": "2026-03-08",
+                "as_of_date": "2026-05-08",
+                "completed_vaccines": [],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with Session(engine) as db_session:
+            stmt = (
+                select(ToolCall)
+                .where(ToolCall.session_id == session_id)
+                .order_by(ToolCall.created_at.desc())
+            )
+            tool_call = db_session.exec(stmt).first()
+
+        self.assertIsNotNone(tool_call)
+        assert tool_call is not None
+        self.assertEqual(tool_call.tool_name, "calculate_vaccine_schedule")
+        self.assertEqual(tool_call.status, "ok")
+        self.assertEqual(tool_call.input_payload["birth_date"], "2026-03-08")
 
     def test_vaccine_record_lifecycle(self):
         profile_response = self.client.post(
