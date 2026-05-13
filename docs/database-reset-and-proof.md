@@ -8,6 +8,7 @@ Yang dibersihkan:
 
 ```text
 PostgreSQL Docker volume
+Redis Docker volume
 ```
 
 Yang tidak otomatis dibersihkan:
@@ -18,7 +19,7 @@ chroma_db/
 data/*.pdf
 ```
 
-Catatan: `docker compose down -v` akan menghapus data PostgreSQL lokal. Jalankan hanya kalau memang ingin reset total database lokal.
+Catatan: `docker compose down -v` akan menghapus data PostgreSQL dan Redis lokal. Jalankan hanya kalau memang ingin reset total service lokal.
 
 ## 1. Reset PostgreSQL Lokal
 
@@ -28,22 +29,23 @@ Stop container dan hapus volume database:
 docker compose down -v
 ```
 
-Start PostgreSQL baru:
+Start PostgreSQL dan Redis baru:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis
 ```
 
 Cek container sehat:
 
 ```bash
-docker compose ps postgres
+docker compose ps postgres redis
 ```
 
 Expected:
 
 ```text
 parentease-postgres   ...   Up ... (healthy)   0.0.0.0:5432->5432/tcp
+parentease-redis      ...   Up ... (healthy)   0.0.0.0:6379->6379/tcp
 ```
 
 ## 2. Run Migration
@@ -69,7 +71,7 @@ uv run alembic current
 Expected:
 
 ```text
-20260512_0001 (head)
+20260513_0003 (head)
 ```
 
 Proof via `psql`:
@@ -91,7 +93,24 @@ Expected tables:
 alembic_version
 chatmessage
 childprofile
+document
+toolcall
 vaccinerecord
+```
+
+Redis/Celery proof:
+
+```bash
+docker compose exec -T redis redis-cli ping
+uv run celery -A app.core.celery_app.celery_app report
+```
+
+Expected:
+
+```text
+PONG
+transport: redis://localhost:6379/1
+results: redis://localhost:6379/2
 ```
 
 ## 3. Ingest Chroma Knowledge Base
@@ -109,7 +128,27 @@ pediatric_guidelines
 434 chunks
 ```
 
-Catatan: Chroma bukan PostgreSQL. Chroma menyimpan vector index PDF lokal di `chroma_db/`.
+Catatan: Chroma bukan PostgreSQL. Chroma menyimpan vector index PDF lokal di `chroma_db/`. PostgreSQL hanya menyimpan metadata dokumen untuk proof/debugging.
+
+PostgreSQL proof setelah ingest:
+
+```sql
+select
+  filename,
+  status,
+  collection_name,
+  chunk_count,
+  ingested_at
+from document
+order by filename;
+```
+
+Expected:
+
+```text
+asi_guidelines.pdf | completed | pediatric_guidelines | 50
+buku_kia_2024.pdf  | completed | pediatric_guidelines | 384
+```
 
 ## 4. Start Backend
 
@@ -172,7 +211,7 @@ Klik submit / simpan.
 Network tab expected:
 
 ```text
-POST http://localhost:8000/api/v1/profiles
+POST http://localhost:8000/api/v1/profiles/
 Status: 200
 ```
 
@@ -315,6 +354,31 @@ Proof:
 ```text
 Kalau log "Calculated vaccine schedule from child profile" muncul, berarti chat otomatis memakai vaccine tool.
 Kalau tidak muncul, cek apakah X-Session-ID terkirim dan child profile punya birth_date.
+```
+
+PostgreSQL/TablePlus proof:
+
+```sql
+select
+  id,
+  session_id,
+  tool_name,
+  status,
+  input_payload,
+  sources,
+  created_at
+from toolcall
+where session_id = '{SESSION_ID}'
+order by created_at desc;
+```
+
+Expected:
+
+```text
+tool_name = calculate_vaccine_schedule
+status    = ok
+input_payload.birth_date terisi
+sources berisi Buku Kesehatan Ibu dan Anak 2024
 ```
 
 ### UI Step 4: Red Flag Question

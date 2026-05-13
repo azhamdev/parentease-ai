@@ -19,6 +19,9 @@ Fill API keys in `.env`:
 OPEN_ROUTER_API_KEY=your_openrouter_api_key_here
 MISTRAL_API_KEY=your_mistral_api_key_here
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/1
+CELERY_RESULT_BACKEND=redis://localhost:6379/2
 ```
 
 Install dependencies:
@@ -27,7 +30,51 @@ Install dependencies:
 uv sync
 ```
 
-Start PostgreSQL and run migration:
+## Full Local Run
+
+After pulling this branch, run:
+
+```bash
+uv sync
+cp .env.example .env
+```
+
+Fill `.env`, then start services and migrate:
+
+```bash
+make migrate
+```
+
+Ingest PDFs once for local RAG:
+
+```bash
+uv run -m scripts.ingest_pdfs
+```
+
+Run backend:
+
+```bash
+make dev
+```
+
+Run frontend in another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Optional verification:
+
+```bash
+docker compose ps postgres redis
+uv run alembic current
+docker compose exec -T redis redis-cli ping
+uv run celery -A app.core.celery_app.celery_app report
+```
+
+Start PostgreSQL + Redis and run migration:
 
 ```bash
 make migrate
@@ -67,7 +114,7 @@ docker compose ps postgres
 Expected Alembic version:
 
 ```text
-20260512_0001 (head)
+20260513_0003 (head)
 ```
 
 `parentease.db` is an old/local SQLite file and is not used when `DATABASE_URL` points to PostgreSQL.
@@ -86,14 +133,27 @@ Frontend runs at:
 http://localhost:5173
 ```
 
-## Redis
+## Redis + Celery
 
-Redis is not required for the current local MVP flow.
+Redis is available through Docker Compose. Celery is configured as an M3 foundation for future async upload processing and async tool execution.
 
-If needed later:
+Start Redis:
 
 ```bash
-redis-server --daemonize yes
-redis-cli ping
-redis-cli shutdown
+make redis
+docker compose ps redis
 ```
+
+Run a Celery worker:
+
+```bash
+make worker
+```
+
+Send a health task from another terminal:
+
+```bash
+make celery-health
+```
+
+Current note: Celery is a skeleton foundation. The active chat/upload MVP flow does not depend on Celery yet.

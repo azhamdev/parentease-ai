@@ -4,35 +4,53 @@ Dokumen ini merangkum scope M3 berdasarkan kondisi repo saat ini dan pembagian k
 
 ## Kondisi Repo Saat Ini
 
-Repo saat ini masih memakai struktur sederhana:
+Repo saat ini sudah melewati struktur awal sederhana. Backend aktif sekarang memakai FastAPI dengan modul `app/api/v1`, tool deterministic, Alembic, dan PostgreSQL lokal via Docker Compose.
 
 ```text
 app/
   main.py
-  agent.py
+  database.py
   models.py
-  static/index.html
-scripts/
-  ingest_pdfs.py
-data/
-  asi_guidelines.pdf
-```
-
-Struktur target dari pembagian tim belum ada:
-
-```text
-src/
   api/v1/endpoints/
-  core/
-  models/
-  services/
-  utils/
+    chat.py
+    child_profiles.py
+    sessions.py
+    tools.py
+  services/agent/
+    streaming.py
+    orchestrator.py
+  tools/
+    red_flags.py
+    schemas.py
+    vaccine_schedule.py
 alembic/
-docker/
+  versions/
+docker-compose.yml
+frontend/
 tests/
 ```
 
-Implikasinya: M3 bisa mulai dari desain kontrak, schema, tool logic murni, dan scaffolding yang terisolasi. Hindari refactor besar ke `src/` sebelum disepakati, karena M1/M2 kemungkinan juga akan menyentuh routing, agent, dan RAG.
+Status aktual M3:
+
+```text
+PostgreSQL Docker        : tersedia
+Alembic                  : tersedia
+Redis Docker             : tersedia
+Celery app skeleton      : tersedia
+Vaccine schedule tool    : tersedia dan tested
+Vaccine endpoint         : tersedia
+Vaccine history endpoint : tersedia
+Chat auto vaccine tool   : tersedia
+Basic red flag handler   : tersedia
+RAG Chroma static PDFs   : tersedia lokal setelah ingest
+Tool call audit table    : tersedia untuk tracking pemanggilan tool
+MCP server               : belum dibuat
+Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
+Growth/z-score valid WHO : belum dibuat
+PDF upload               : belum dibuat
+```
+
+Implikasinya: pekerjaan M3 berikutnya sebaiknya fokus ke hardening, auditability, dan foundation yang tidak menabrak M1/M2. Refactor besar ke struktur `src/` tidak direkomendasikan untuk MVP karena repo aktif sudah berjalan dengan struktur `app/`.
 
 ## Scope M3
 
@@ -44,6 +62,91 @@ M3 bertanggung jawab untuk:
 - API routing dan validation layer.
 - MCP server / tool exposure agar agent milik M1 bisa consume.
 - Shared model contracts yang dipakai M1/M2.
+
+## Mapping Dari Pembagian Tim
+
+Bagian ini menyatukan tiga sumber pembagian kerja: struktur folder target, tabel ownership anggota, dan tabel teknologi/collaboration point.
+
+### Ownership Anggota
+
+```text
+M1 - AI Agent & Session
+  Fokus folder target:
+    services/agent/
+    api/v1/endpoints/chat.py
+    api/v1/endpoints/sessions.py
+    utils/langfuse_logger.py
+  Tugas:
+    Agent streaming via SSE/WebSocket
+    MCP client ke agent loop
+    Session dan welcome context
+    Langfuse tracing/prompt versioning/eval dashboard
+    Redis-backed session cache untuk short-term memory
+
+M2 - RAG & User Data
+  Fokus folder target:
+    services/rag/
+    services/uploads/
+    models/document.py
+    models/history.py
+  Tugas:
+    User upload parsing PDF/TXT/IMG
+    Chunking, cleaning, embedding, vector search
+    History user data dan long-term memory
+    Context builder untuk welcome data + history + retrieved chunks
+    Trigger async upload processing via Celery infra dari M3
+
+M3 - BE Core, Database & Tools
+  Fokus folder target:
+    core/
+    services/tools/
+    api/v1/endpoints/tools.py
+    models/
+    alembic/
+  Tugas:
+    PostgreSQL + Alembic schema, migration, constraint, index
+    Redis + Celery broker, queue, retry, result backend
+    calculate_vaccine_schedule() logic, validasi input, expose via MCP server
+    API routing, middleware, validation, rate limit, error format
+    MCP server endpoint/tool exposure agar M1 bisa consume
+```
+
+### Teknologi dan Collaboration Point
+
+| Teknologi | Primary Owner | Cross-Usage / Collaboration Point |
+| --- | --- | --- |
+| Redis + Celery | M3 | M2 memakai untuk async upload processing. M1 bisa memakai untuk fallback async tool execution/session cache. |
+| MCP | M1 client + M3 server | M3 expose tools seperti `vaccine_schedule`. M1 integrasikan MCP client ke agent loop. |
+| User's Upload | M2 | Celery task dari M3 handle heavy parsing. Vector store dipakai M2 untuk chunking/retrieval. |
+| `calculate_vaccine_schedule()` | M3 | M3 handle logic dan validasi. M1 bind sebagai tool agent, idealnya via MCP. |
+| History User Data | M2 | Disimpan di PostgreSQL schema dari M3 dan/atau vector index. M2 build retrieval logic. |
+| Session | M1 | Redis cache + DB persistence. Context welcome masuk ke session state lalu agent system prompt. |
+| Agent Streaming | M1 | FastAPI `StreamingResponse`/WebSocket, yield token dari LLM call dan tool calls. |
+| Welcome Page Context | M1 state + M2 storage | M1 parse dan inject ke prompt awal. M2 simpan sebagai history/context untuk recall jangka panjang. |
+| Alembic | M3 | Manage semua DB schema changes. M2 submit migration PR untuk vector/history tables jika menyentuh schema. |
+| Langfuse | M1 | Semua anggota idealnya wrap LLM/tool call dengan tracing yang disiapkan M1. |
+| PostgreSQL | M3 core + M2 pgvector | M3 handle relational schema. M2 install/konfigurasi `pgvector` dan buat index retrieval jika pindah dari Chroma. |
+
+### Mapping Struktur Target ke Repo Saat Ini
+
+Repo target di dokumen awal memakai `src/`, tetapi repo aktif saat ini masih memakai `app/`. Untuk MVP, mapping-nya:
+
+```text
+src/api/v1/endpoints/chat.py      -> app/api/v1/endpoints/chat.py
+src/api/v1/endpoints/tools.py     -> app/api/v1/endpoints/tools.py
+src/api/v1/endpoints/sessions.py  -> app/api/v1/endpoints/sessions.py
+src/core/database.py              -> app/database.py
+src/core/celery_app.py            -> app/core/celery_app.py
+src/models/*                      -> app/models.py
+src/services/agent/*              -> app/services/agent/*
+src/services/rag/*                -> sebagian masih di scripts/ingest_pdfs.py dan app/services/agent/streaming.py
+src/services/tools/*              -> app/tools/*
+src/services/uploads/*            -> belum ada
+src/utils/validators.py           -> belum ada
+main.py                           -> app/main.py
+```
+
+Keputusan MVP: jangan refactor besar dari `app/` ke `src/` sebelum disepakati tim, karena akan menyentuh ownership M1/M2 dan berisiko konflik merge.
 
 ## Boundary Agar Tidak Konflik
 
@@ -297,16 +400,23 @@ Jadi implementasi tool jangan terlalu tergantung pada MCP. Core logic harus bera
 
 ### 6. Redis + Celery Flow
 
-Untuk MVP, Redis + Celery belum wajib kecuali upload/ingestion M2 harus async.
+Untuk MVP aktif, Redis + Celery belum wajib di chat/upload flow. Skeleton M3 sekarang sudah tersedia agar M2 bisa menyambungkan async upload processing tanpa mengubah foundation lagi.
 
-Jika tetap dibuat sekarang, scope M3:
+Implementasi saat ini:
 
 ```text
-src/core/celery_app.py
-docker/compose.yml
-worker startup command
-task retry defaults
-healthcheck task
+docker-compose.yml       -> service redis
+app/core/celery_app.py   -> Celery instance + health task
+Makefile                 -> redis, services, worker, celery-health
+.env.example             -> REDIS_URL, CELERY_BROKER_URL, CELERY_RESULT_BACKEND
+```
+
+Command:
+
+```bash
+make redis
+make worker
+make celery-health
 ```
 
 Flow upload async nantinya:
@@ -585,14 +695,16 @@ __pycache__/
 ```text
 RAG PDF umum            : siap secara lokal setelah ingest
 Chroma collection       : pediatric_guidelines, 434 chunks lokal
+Document metadata       : tersedia via tabel document setelah ingest
 Vaccine schedule tool   : siap dan tested
 Vaccine endpoint        : siap dan tested
 Agent chat              : pre-retrieve RAG, auto vaccine schedule, red flag handler
 calculate_z_score       : masih placeholder
 Session/history         : tersedia dari merge M1, dipakai untuk profil/chat
 Vaccine history         : tersedia via endpoint profile vaccines
+Tool call audit         : tersedia via tabel toolcall
 MCP server              : belum dibuat
-Redis/Celery            : belum dibuat
+Redis/Celery            : skeleton tersedia, belum dipakai flow aktif
 Alembic migration       : initial schema tersedia
 PostgreSQL              : tersedia via Docker Compose
 ```
@@ -626,7 +738,7 @@ Scope MVP M3 yang sudah dikerjakan:
 
 Scope yang sengaja belum menjadi MVP:
 
-- Redis/Celery worker.
+- Redis/Celery worker untuk flow upload/chat aktif.
 - MCP server transport.
 - Growth chart/z-score valid WHO.
 - Intent classifier berbasis model khusus.
@@ -639,6 +751,7 @@ Urutan jalan lokal:
 uv sync
 cp .env.example .env
 docker compose up -d postgres
+docker compose up -d redis
 uv run alembic upgrade head
 uv run -m scripts.ingest_pdfs
 make dev
@@ -658,6 +771,9 @@ Environment yang dibutuhkan:
 OPEN_ROUTER_API_KEY=...
 MISTRAL_API_KEY=...
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/1
+CELERY_RESULT_BACKEND=redis://localhost:6379/2
 ```
 
 Catatan saat ini:
@@ -665,6 +781,8 @@ Catatan saat ini:
 - `OPEN_ROUTER_API_KEY` dipakai untuk chat model dan embedding melalui OpenRouter.
 - `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode saat ini.
 - `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya PostgreSQL Docker.
+- `REDIS_URL` disiapkan untuk Redis session/cache usage.
+- `CELERY_BROKER_URL` dan `CELERY_RESULT_BACKEND` dipakai oleh `app/core/celery_app.py`.
 - `chroma_db/` tidak di-commit, jadi setiap developer perlu ingest PDF sendiri.
 - `parentease.db` adalah sisa SQLite lokal lama dan tidak dipakai jika `DATABASE_URL` mengarah ke PostgreSQL.
 
@@ -679,6 +797,8 @@ alembic.ini
 alembic/env.py
 alembic/script.py.mako
 alembic/versions/20260512_0001_initial_schema.py
+alembic/versions/20260513_0002_add_tool_call_audit.py
+alembic/versions/20260513_0003_add_document_metadata.py
 ```
 
 Dependency:
@@ -710,6 +830,22 @@ uv run alembic upgrade head
 
 Initial migration dibuat defensif. Kalau developer sudah punya `parentease.db` dari `create_all`, migration tidak gagal karena tabel sudah ada; Alembic tetap mencatat revision `20260512_0001`.
 
+Migration kedua menambahkan tabel audit:
+
+```text
+toolcall
+```
+
+Tabel ini dipakai untuk proof/debugging pemanggilan tool dari chat, terutama `calculate_vaccine_schedule`.
+
+Migration ketiga menambahkan tabel metadata dokumen:
+
+```text
+document
+```
+
+Tabel ini dipakai untuk proof/debugging ingest PDF lokal. `scripts.ingest_pdfs` akan menulis status `processing`, `completed`, `skipped`, atau `failed`.
+
 PostgreSQL local disediakan lewat:
 
 ```text
@@ -737,6 +873,15 @@ Chroma collection:
 path       : ./chroma_db
 collection : pediatric_guidelines
 total      : 434 chunks lokal
+```
+
+PostgreSQL document metadata:
+
+```text
+table      : document
+writer     : scripts.ingest_pdfs
+status     : processing | completed | skipped | failed
+purpose    : proof file PDF mana yang sudah masuk Chroma lokal
 ```
 
 RAG source rule:
@@ -775,9 +920,66 @@ VaccineRecord
   date_given
   notes
   created_at
+
+ToolCall
+  id
+  session_id
+  tool_name
+  status
+  input_payload
+  output_payload
+  sources
+  created_at
+
+Document
+  id
+  filename
+  source_type
+  status
+  collection_name
+  chunk_count
+  error_message
+  ingested_at
+  created_at
+  updated_at
 ```
 
 Relasi MVP masih berbasis `session_id`, bukan foreign key database ketat. Ini cukup untuk local MVP, tetapi untuk production perlu migration dan constraint.
+
+`ToolCall` dipakai sebagai audit trail untuk membuktikan tool deterministic benar-benar terpanggil dari chat. Saat user bertanya jadwal vaksin dan profil anak punya `birth_date`, `stream_chat_response()` menjalankan `calculate_vaccine_schedule()` lalu endpoint chat menyimpan audit row berisi input, output, status, dan source tool.
+
+Cara cek di TablePlus:
+
+```sql
+select
+  id,
+  session_id,
+  tool_name,
+  status,
+  input_payload,
+  sources,
+  created_at
+from toolcall
+order by created_at desc
+limit 20;
+```
+
+`Document` dipakai untuk tracking metadata PDF yang di-ingest ke Chroma. Vector tetap disimpan di `chroma_db/`, sedangkan PostgreSQL menyimpan bukti operasional file mana yang sudah masuk, jumlah chunk, status ingest, dan collection target.
+
+Cara cek dokumen RAG di TablePlus:
+
+```sql
+select
+  id,
+  filename,
+  status,
+  collection_name,
+  chunk_count,
+  ingested_at,
+  updated_at
+from document
+order by updated_at desc;
+```
 
 ### Child Profile Contract
 
@@ -869,6 +1071,7 @@ Request schema:
 
 ```json
 {
+  "session_id": "optional-session-id-for-audit",
   "birth_date": "2026-03-08",
   "as_of_date": "2026-05-12",
   "country": "ID",
@@ -931,6 +1134,7 @@ Business rules:
 
 - Jika `completed_vaccines` berisi kode vaksin, item tersebut masuk `completed` dan tidak muncul di `due_now`.
 - `JE` hanya muncul kalau `include_regional_vaccines=true`.
+- Jika request membawa `session_id`, endpoint menyimpan audit row ke tabel `toolcall`.
 - Tool memberi warning untuk batas usia rotavirus dan catatan konsultasi tenaga kesehatan.
 - Tool tidak membuat diagnosis dan tidak menggantikan keputusan dokter.
 
