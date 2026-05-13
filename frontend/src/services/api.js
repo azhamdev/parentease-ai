@@ -39,7 +39,7 @@ export const createSession = async (data) => {
   
   console.log("📤 Payload dikirim:", JSON.stringify(payload, null, 2));
   
-  const res = await fetch(`${API_URL}/profiles`, {
+  const res = await fetch(`${API_URL}/profiles/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
