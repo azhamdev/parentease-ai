@@ -10,6 +10,7 @@ from app.api.v1.endpoints import chat
 from app.api.v1.endpoints import tools
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from app.services.agent.mcp_client import disconnect_mcp_client
 
 load_dotenv()
 
@@ -19,6 +20,8 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
 
+    # Shutdown: Cleanup MCP Client
+    await disconnect_mcp_client()
 
 app = FastAPI(title="ParentEase AI Backend", lifespan=lifespan)
 

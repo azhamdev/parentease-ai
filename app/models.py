@@ -1,24 +1,23 @@
-from datetime import date
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
-
 class ChildProfile(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    session_id: str | None = Field(index=True)  # 🔗 Link ke session
-    
-    # Field wajib
-    birth_date: date  # YYYY-MM-DD
-    gender: str      # L atau P
-    
-    # Field opsional
+    session_id: str | None = Field(index=True)
+    birth_date: date
+    gender: str
     name: str | None = None
     weight_kg: float | None = None
     height_cm: float | None = None
     topic: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(
+        default=False, 
+        sa_column_kwargs={"server_default": "false"}
+    )
+    deleted_at: datetime | None = Field(default=None)
 
 class ChatMessage(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
@@ -26,6 +25,11 @@ class ChatMessage(SQLModel, table=True):
     role: str
     content: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(
+        default=False, 
+        sa_column_kwargs={"server_default": "false"}
+    )
+    deleted_at: datetime | None = Field(default=None)
 
 class VaccineRecord(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)

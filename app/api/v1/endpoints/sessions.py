@@ -1,5 +1,7 @@
+# app/api/v1/endpoints/sessions.py
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, select, update
+from datetime import datetime
 from app.models import ChildProfile, ChatMessage
 from app.database import get_session
 
@@ -9,15 +11,27 @@ router = APIRouter(tags=["sessions"])
 async def list_sessions(db_session: Session = Depends(get_session)):
     """Ambil semua session untuk sidebar riwayat chat."""
     try:
-        stmt = select(ChildProfile).order_by(ChildProfile.created_at.desc())
+        # ✅ FILTER: Hanya ambil yang belum dihapus
+        stmt = (
+            select(ChildProfile)
+            .where(ChildProfile.is_deleted == False)
+            .order_by(ChildProfile.created_at.desc())
+        )
         profiles = db_session.exec(stmt).all()
         
         results = []
         for p in profiles:
-            msg_stmt = select(ChatMessage).where(
-                ChatMessage.session_id == p.session_id,
-                ChatMessage.role == "user"
-            ).order_by(ChatMessage.created_at.desc()).limit(1)
+            # ✅ FILTER: Hanya pesan user yang belum dihapus
+            msg_stmt = (
+                select(ChatMessage)
+                .where(
+                    ChatMessage.session_id == p.session_id,
+                    ChatMessage.role == "user",
+                    ChatMessage.is_deleted == False
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .limit(1)
+            )
             last_msg = db_session.exec(msg_stmt).first()
             
             preview = "Mulai percakapan baru"
@@ -45,15 +59,25 @@ async def get_session_messages(
 ):
     """Ambil semua pesan untuk session tertentu."""
     try:
-        profile_stmt = select(ChildProfile).where(ChildProfile.session_id == session_id)
+        # ✅ VERIFIKASI: Session harus ada & belum dihapus
+        profile_stmt = select(ChildProfile).where(
+            ChildProfile.session_id == session_id,
+            ChildProfile.is_deleted == False
+        )
         profile = db_session.exec(profile_stmt).first()
         
         if not profile:
-            raise HTTPException(status_code=404, detail="Session tidak ditemukan")
+            raise HTTPException(status_code=404, detail="Session tidak ditemukan atau sudah dihapus")
         
-        stmt = select(ChatMessage).where(
-            ChatMessage.session_id == session_id
-        ).order_by(ChatMessage.created_at.asc())
+        # ✅ FILTER: Hanya pesan yang belum dihapus
+        stmt = (
+            select(ChatMessage)
+            .where(
+                ChatMessage.session_id == session_id,
+                ChatMessage.is_deleted == False
+            )
+            .order_by(ChatMessage.created_at.asc())
+        )
         
         messages = db_session.exec(stmt).all()
         
@@ -72,3 +96,46 @@ async def get_session_messages(
         import logging
         logging.error(f"Error getting messages for session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+# ✅ ENDPOINT BARU: Soft Delete Session
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    db_session: Session = Depends(get_session)
+):
+    """
+    Hapus session secara soft (data tetap ada di DB tapi ditandai deleted).
+    - Profile anak ditandai is_deleted=True
+    - Semua chat message terkait juga ditandai deleted
+    """
+    # 1. Cek apakah session ada & belum dihapus
+    profile_stmt = select(ChildProfile).where(
+        ChildProfile.session_id == session_id,
+        ChildProfile.is_deleted == False
+    )
+    profile = db_session.exec(profile_stmt).first()
+    
+    if not profile:
+        raise HTTPException(status_code=404, detail="Session tidak ditemukan atau sudah dihapus")
+    
+    now = datetime.utcnow()
+    
+    # 2. Soft delete semua message terkait
+    msg_update = (
+        update(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .values(is_deleted=True, deleted_at=now)
+    )
+    db_session.exec(msg_update)
+    
+    # 3. Soft delete profile
+    profile.is_deleted = True
+    profile.deleted_at = now
+    db_session.add(profile)
+    
+    db_session.commit()
+    
+    return {
+        "message": "Session berhasil dihapus",
+        "deleted_at": now.isoformat()
+    }

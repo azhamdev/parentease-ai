@@ -214,3 +214,16 @@ export const getMessages = async (sessionId) => {
   }
   return res.json();
 };
+
+export const deleteSession = async (sessionId) => {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+  });
+  
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Gagal menghapus session");
+  }
+  return res.json();
+};

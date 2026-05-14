@@ -1,11 +1,11 @@
-// frontend/src/components/Sidebar.jsx
 import { useEffect, useState } from 'react';
-import { Plus, MessageSquare, Loader2 } from 'lucide-react';
-import { getSessions } from '../services/api';
+import { Plus, MessageSquare, Loader2, Trash2 } from 'lucide-react';
+import { getSessions, deleteSession } from '../services/api';
 
 const Sidebar = ({ activeSessionId, onSelectSession, onNewSession }) => {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     loadSessions();
@@ -19,6 +19,32 @@ const Sidebar = ({ activeSessionId, onSelectSession, onNewSession }) => {
       console.error("Error loading sessions:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDelete = async (sessionId, e) => {
+    e.stopPropagation(); // Mencegah trigger onSelectSession
+    
+    const confirmed = window.confirm(
+      "Hapus session ini?\nSemua riwayat chat & data anak akan dihapus."
+    );
+    if (!confirmed) return;
+    
+    setDeletingId(sessionId);
+    try {
+      await deleteSession(sessionId);
+      
+      // Update UI langsung tanpa reload
+      setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+      
+      // Jika yang dihapus adalah session aktif, reset ke new session
+      if (sessionId === activeSessionId) {
+        onNewSession();
+      }
+    } catch (err) {
+      alert(`Gagal menghapus: ${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -47,23 +73,43 @@ const Sidebar = ({ activeSessionId, onSelectSession, onNewSession }) => {
           </div>
         ) : (
           sessions.map((s) => (
-            <button
+            <div
               key={s.session_id}
-              onClick={() => onSelectSession(s.session_id)}
-              className={`w-full text-left p-3 rounded-lg transition flex items-start gap-3 ${
+              className={`group relative flex items-start gap-3 p-3 rounded-lg transition ${
                 activeSessionId === s.session_id
                   ? "bg-primary/10 border border-primary/30 text-primary"
                   : "hover:bg-bg-tertiary text-text-main border border-transparent"
               }`}
             >
-              <MessageSquare className="w-4 h-4 mt-0.5 flex-shrink-0" />
-              <div className="min-w-0">
-                <p className="text-sm font-medium truncate">{s.child_name}</p>
-                <p className="text-xs text-text-muted truncate mt-0.5">
-                  {s.last_message_preview}
-                </p>
-              </div>
-            </button>
+              <button
+                onClick={() => onSelectSession(s.session_id)}
+                className="flex-1 text-left min-w-0"
+              >
+                <div className="min-w-0">
+                  <div className="flex gap-2 jutify-start item-center">
+                    <MessageSquare className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <p className="text-sm font-medium truncate">{s.child_name}</p>
+                  </div>
+                  <p className="text-xs text-text-muted truncate mt-0.5">
+                    {s.last_message_preview}
+                  </p>
+                </div>
+              </button>
+              
+              {/* Tombol Hapus (muncul saat hover) */}
+              <button
+                onClick={(e) => handleDelete(s.session_id, e)}
+                disabled={deletingId === s.session_id}
+                className="p-1.5 text-red-400 text-red-500 bg-red-500/10 rounded transition disabled:opacity-50"
+                title="Hapus session"
+              >
+                {deletingId === s.session_id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           ))
         )}
       </div>

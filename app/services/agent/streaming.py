@@ -1,16 +1,52 @@
 import os
 import json
+import httpx
 from typing import AsyncGenerator, Callable, cast
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from datetime import date
 from dateutil.relativedelta import relativedelta
 import chromadb
-from openai import OpenAI
+
 from app.tools.schemas import VaccineScheduleRequest
 from app.tools.vaccine_schedule import calculate_vaccine_schedule
 from app.tools.red_flags import detect_red_flags
 
+# --- ✅ MCP CLIENT SETUP ---
+async def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
+    """
+    Memanggil MCP Server (M3) untuk eksekusi tool.
+    """
+    mcp_url = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
+    
+    # Payload standar JSON-RPC 2.0
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    }
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            print(f"🔌 Calling MCP Server: {mcp_url}/rpc -> {tool_name}")
+            response = await client.post(f"{mcp_url}/rpc", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            if "error" in result:
+                raise Exception(result["error"].get("message", "MCP Server Error"))
+            
+            return result.get("result", {})
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"MCP HTTP Error: {e.response.status_code}")
+        except Exception as e:
+            raise Exception(f"MCP Connection Failed: {str(e)}")
+
+# --- OPENAI CLIENTS ---
 def get_async_client():
     return AsyncOpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -23,6 +59,7 @@ def get_sync_client():
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
     )
 
+# --- CHROMADB SETUP (M2) ---
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 COLLECTION_NAME = "pediatric_guidelines"
 
@@ -34,17 +71,19 @@ def _embed_query(text: str) -> list[float]:
     resp = client.embeddings.create(model="openai/text-embedding-3-small", input=[text])
     return resp.data[0].embedding
 
-def _format_title(filename: str) -> str:
+def format_title(filename: str) -> str:
     return filename.removesuffix(".pdf").replace("_", " ").replace("-", " ").title()
 
 def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
+    """Fungsi pencarian RAG lokal (M2 Scope) - TETAP DIGUNAKAN."""
     emb = _embed_query(query)
     res = _get_collection().query(query_embeddings=[emb], n_results=3)
     if res["documents"] and res["documents"][0]:
-        sources = [{"title": _format_title(m.get("source", "Unknown")), "page": m.get("page")} for m in res["metadatas"][0]]
+        sources = [{"title": format_title(m.get("source", "Unknown")), "page": m.get("page")} for m in res["metadatas"][0]]
         return "\n\n---\n\n".join(res["documents"][0]), sources
     return "Tidak ditemukan panduan medis yang relevan.", []
 
+# --- TOOLS SCHEMA (UNTUK LLM) ---
 TOOLS = [
     {
         "type": "function",
@@ -57,63 +96,34 @@ TOOLS = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_vaccine_schedule",
+            "description": "Hitung jadwal vaksin berdasarkan tanggal lahir dan riwayat vaksin anak.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "birth_date": {"type": "string", "description": "Tanggal lahir anak (YYYY-MM-DD)"},
+                    "completed_vaccines": {"type": "array", "items": {"type": "string"}, "description": "Daftar kode vaksin yang sudah diberikan (opsional)"}
+                },
+                "required": ["birth_date"]
+            }
+        }
     }
 ]
 
-MEDICAL_KEYWORDS = (
-    "asi",
-    "mpasi",
-    "makan",
-    "menyusui",
-    "susu",
-    "vaksin",
-    "imunisasi",
-    "bcg",
-    "dpt",
-    "polio",
-    "pcv",
-    "rotavirus",
-    "campak",
-    "rubella",
-    "tumbuh",
-    "kembang",
-    "berat",
-    "tinggi",
-    "demam",
-    "batuk",
-    "diare",
-    "stunting",
-    "posyandu",
-    "bayi",
-    "anak",
-)
-
-VACCINE_KEYWORDS = (
-    "vaksin",
-    "vaksinasi",
-    "imunisasi",
-    "bcg",
-    "dpt",
-    "polio",
-    "pcv",
-    "rotavirus",
-    "campak",
-    "rubella",
-    "mr",
-    "hb0",
-    "hepatitis",
-)
-
+MEDICAL_KEYWORDS = ("asi", "mpasi", "makan", "menyusui", "susu", "vaksin", "imunisasi", "bcg", "dpt", "polio", "pcv", "rotavirus", "campak", "rubella", "tumbuh", "kembang", "berat", "tinggi", "demam", "batuk", "diare", "stunting", "posyandu", "bayi", "anak")
+VACCINE_KEYWORDS = ("vaksin", "vaksinasi", "imunisasi", "bcg", "dpt", "polio", "pcv", "rotavirus", "campak", "rubella", "mr", "hb0", "hepatitis")
 
 def should_retrieve_guidelines(message: str) -> bool:
     text = message.lower()
     return any(keyword in text for keyword in MEDICAL_KEYWORDS)
 
-
 def should_calculate_vaccine_schedule(message: str) -> bool:
     text = message.lower()
     return any(keyword in text for keyword in VACCINE_KEYWORDS)
-
 
 def _unique_sources(sources: list[dict]) -> list[dict]:
     seen = set()
@@ -125,16 +135,14 @@ def _unique_sources(sources: list[dict]) -> list[dict]:
             unique_sources.append(source)
     return unique_sources
 
-
 def _format_vaccine_schedule_result(result) -> str:
     def item_lines(title: str, items: list) -> list[str]:
-        if not items:
-            return [f"{title}: tidak ada."]
+        if not items: return [f"{title}: tidak ada."]
         lines = [f"{title}:"]
         for item in items:
             lines.append(f"- {item.label} ({item.due_age_label})")
         return lines
-
+    
     lines = [
         f"Status: {result.status}",
         f"Usia anak: {result.age_months} bulan ({result.age_days} hari)",
@@ -148,29 +156,45 @@ def _format_vaccine_schedule_result(result) -> str:
         lines.extend(f"- {warning}" for warning in result.warnings)
     return "\n".join(lines)
 
-
+# --- MAIN STREAMING FUNCTION ---
 async def stream_chat_response(
     user_message: str,
     child_context: dict | None = None,
     tool_audit_callback: Callable[[dict], None] | None = None,
 ) -> AsyncGenerator[str, None]:
+    
     async_client = get_async_client()
     today = date.today()
     today_str = today.strftime("%d %B %Y")
     
+    # Base Prompt Construction
     base_prompt = (
         f"Anda adalah ParentEase AI, asisten parenting berbasis bukti ilmiah. "
-        f"Tanggal hari ini: **{today_str}**. "
+        f"Tanggal hari ini: {today_str}. "
         f"Selalu gunakan tools untuk data medis dan gunakan sumber dari data yang sudah tersedia baik dari pdf atau file lainnya. Jangan mengarang. "
         f"Jawab dalam Bahasa Indonesia dengan nada hangat dan profesional.\n\n"
+        
+        # ✅ BATASAN TOPIK
+        f"🚫 **BATASAN TOPIK YANG WAJIB DIPATUHI**:\n"
+        f"- Anda HANYA boleh membahas topik seputar:\n"
+        f"  1. **Kesehatan dan tumbuh kembang anak** (ASI, MPASI, vaksinasi, tidur, milestones, dll)\n"
+        f"  2. **Kesehatan ibu** (postpartum, menyusui, nutrisi ibu, mental health ibu, dll)\n"
+        f"  3. **Peran dan pengasuhan orangtua** (bonding, disiplin positif, stimulasi anak, dll)\n"
+        f"  4. **Gizi dan nutrisi keluarga** (pola makan sehat untuk anak dan ibu)\n"
+        f"- Anda TIDAK BOLEH membahas topik di luar itu seperti:\n"
+        f"  - Teknologi, programming, gadget review\n"
+        f"  - Politik, ekonomi, berita umum\n"
+        f"  - Topik dewasa yang tidak berkaitan dengan parenting\n"
+        f"  - Atau topik non-parenting lainnya\n"
+        f"- Jika user bertanya di luar scope, TOLAK dengan sopan dan arahkan kembali ke topik parenting.\n\n"
+        
         f"👥 SAPAAN: Gunakan 'Bunda/Ayah', 'Anda', atau 'Parent'. Jangan asumsikan gender.\n\n"
         f"📝 ATURAN FORMAT WAJIB (IKUTI PERSIS):\n\n"
-        f"**1. STRUKTUR JAWABAN:**\n"
+        f"1. STRUKTUR JAWABAN:\n"
         f"- Mulai dengan salam hangat dan konteks singkat\n"
         f"- Gunakan section bernomor untuk topik utama: **1. Judul Section**\n"
         f"- Setiap section maksimal 3-5 poin penting\n\n"
-        
-        f"**2. FORMAT LIST & BULLET:**\n"
+        f"**2. FORMAT LIST  & BULLET:**\n"
         f"- Untuk list utama gunakan: - Poin utama\n"
         f"- Untuk sub-bullet (poin di dalam poin) WAJIB indent 2 spasi:\n"
         f"  - Poin utama:\n"
@@ -182,9 +206,9 @@ async def stream_chat_response(
         f"**1. Kapan Mulai MPASI?**\n"
         f"- **Usia ideal**: 6 bulan\n"
         f"- **Tanda kesiapan**:\n"
-        f"  - Bisa duduk dengan bantuan\n"
+        f"  - Bayi bisa duduk dengan bantuan\n"
         f"  - Kontrol kepala baik\n"
-        f"  - Minat pada makanan\n"
+        f"  - Menunjukkan minat pada makanan\n"
         f"- **Yang harus dihindari**:\n"
         f"  - Mulai sebelum 4 bulan\n"
         f"  - Terlalu lama menunda\n\n"
@@ -200,9 +224,10 @@ async def stream_chat_response(
         f"- JANGAN gunakan #### atau ###\n"
         f"- JANGAN gunakan ---\n"
         f"- JANGAN gabungkan kata tanpa spasi\n"
-        f"- JANGAN buat list tanpa indentasi untuk sub-poin\n\n"
+        f"- JANGAN buat list tanpa indentasi untuk sub-poin\n"
+        f"- JANGAN bahas topik di luar parenting (teknologi, politik, dll)\n\n"
         
-        f"**6. SPASI & PARAGRAF:**\n"
+        f"**6. SPASI  & PARAGRAF:**\n"
         f"- SELALU beri spasi antar kata\n"
         f"- Beri jarak 1 baris kosong antar section utama\n"
         f"- Gunakan paragraf pendek agar mudah dibaca\n"
@@ -223,25 +248,35 @@ async def stream_chat_response(
         f"- **Kelompok protein**:\n"
         f"  - Ayam cincang halus\n"
         f"  - Ikan tanpa duri\n\n"
+        
+        # ✅ CONTOH PENOLAKAN TOPIK DI LUAR SCOPE
+        f"\n**CONTOH CARA MENOLAK TOPIK DI LUAR SCOPE:**\n"
+        f"- Jika user tanya: 'Apa itu JavaScript?'\n"
+        f"  Response: 'Maaf Parent, saya khusus membantu seputar parenting, kesehatan anak, dan pengasuhan. "
+        f"Untuk pertanyaan tentang teknologi, saya sarankan mencari sumber lain. "
+        f"Ada yang bisa saya bantu seputar tumbuh kembang si kecil? 😊'\n"
+        f"- Jika user tanya: 'Bagaimana cara coding Python?'\n"
+        f"  Response: 'Mohon maaf, saya hanya bisa membantu topik seputar parenting dan kesehatan anak. "
+        f"Silakan tanyakan tentang ASI, MPASI, vaksinasi, atau tumbuh kembang anak ya! 😊'\n"
     )
-    
+
     if child_context:
         birth = child_context.get("birth_date")
         age_months = 0
         if birth:
             try:
                 parsed_birth = birth if isinstance(birth, date) else date.fromisoformat(birth)
-                delta = relativedelta(today, parsed_birth)
+                delta = relativedelta(today,  parsed_birth)
                 age_months = delta.years * 12 + delta.months
             except (TypeError, ValueError):
                 age_months = 0
-        base_prompt += f"\n📋 DATA ANAK:\n- Nama: {child_context.get('name', '-')}\n"
-        base_prompt += f"- Lahir: {birth}\n- Usia: {age_months} bulan\n"
-        base_prompt += f"- Gender: {child_context.get('gender', '-')}\n"
+        base_prompt += f"\n📋 DATA ANAK:\n- Nama: {child_context.get('name', '-')}\n "
+        base_prompt += f"- Lahir: {birth}\n- Usia: {age_months} bulan\n "
+        base_prompt += f"- Gender: {child_context.get('gender', '-')}\n "
         if child_context.get('weight_kg'):
-            base_prompt += f"- Berat: {child_context['weight_kg']} kg\n"
+            base_prompt += f"- Berat: {child_context['weight_kg']} kg\n "
         if child_context.get('height_cm'):
-            base_prompt += f"- Tinggi: {child_context['height_cm']} cm\n"
+            base_prompt += f"- Tinggi: {child_context['height_cm']} cm\n "
 
     red_flag = detect_red_flags(user_message, child_context)
     if red_flag.is_red_flag:
@@ -327,7 +362,7 @@ async def stream_chat_response(
         {"role": "system", "content": base_prompt},
         {"role": "user", "content": user_message},
     ]
-    
+
     try:
         # 🔍 LOG: Check ChromaDB status
         try:
@@ -386,47 +421,68 @@ async def stream_chat_response(
         if has_tools and tool_calls_buffer:
             print(f"🔧 Executing {len(tool_calls_buffer)} tool call(s)")
             messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls_buffer})
-            
+             
             for tc in tool_calls_buffer:
                 try:
-                    args = json.loads(tc["function"]["arguments"])
-                    query = args.get("query", "")
-                    print(f"🔍 Searching for: {query}")
+                    args = json.loads(tc[ "function "][ "arguments "])
+                    tool_name = tc[ "function "][ "name "]
+                    print(f"🔍 Tool Requested: {tool_name} with args: {args} ")
                     
-                    res, srcs = search_medical_guidelines(query)
-                    print(f"✅ Found {len(srcs)} source(s)")
+                    # ✅ MCP INTEGRATION LOGIC
+                    if tool_name == "calculate_vaccine_schedule":
+                        print(f"🔌 Routing to MCP Server...")
+                        try:
+                            mcp_result = await call_mcp_tool(tool_name, args)
+                            # Convert MCP result (dict) to JSON string for LLM
+                            res = json.dumps(mcp_result, ensure_ascii=False)
+                            # Extract sources if available in MCP result
+                            srcs = mcp_result.get("sources", []) 
+                        except Exception as mcp_err:
+                            print(f"❌ MCP Execution Error: {mcp_err}")
+                            res = f"Error calling tool via MCP: {mcp_err}"
+                            srcs = []
+                            
+                    elif tool_name == "search_medical_guidelines":
+                        # Fallback ke local logic (M2 Scope)
+                        query = args.get("query", " ")
+                        print(f"🔍 Searching locally for: {query} ")
+                        res, srcs = search_medical_guidelines(query)
+                        print(f"✅ Found {len(srcs)} source(s) ")
+                    else:
+                        res = f"Tool {tool_name} tidak dikenali."
+                        srcs = []
                     
                     all_sources.extend(srcs)
                     messages.append(
                         cast(
                             ChatCompletionMessageParam,
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "name": "search_medical_guidelines",
-                                "content": res,
+                             {
+                                 "role ":  "tool ",
+                                 "tool_call_id ": tc[ "id "],
+                                 "name ": tool_name,
+                                 "content ": res,
                             },
                         )
                     )
                 except Exception as tool_err:
-                    print(f"❌ Tool execution error: {tool_err}")
+                    print(f"❌ Tool execution error: {tool_err} ")
                     import traceback
                     traceback.print_exc()
                     messages.append(
                         cast(
                             ChatCompletionMessageParam,
                             {
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "name": "search_medical_guidelines",
-                                "content": (
-                                    "Maaf, tidak dapat mengakses informasi medis saat ini."
+                                 "role ":  "tool ",
+                                 "tool_call_id ": tc[ "id "],
+                                 "name ": tool_name,
+                                 "content ": (
+                                     "Maaf, tidak dapat mengakses informasi medis saat ini. "
                                 ),
                             },
                         )
                     )
 
-            # 3️⃣ Stream respons akhir
+             # 3️⃣ Stream respons akhir
             print("🔄 Generating final response...")
             try:
                 final_stream = await async_client.chat.completions.create(
