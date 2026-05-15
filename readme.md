@@ -22,7 +22,7 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
 REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/1
 CELERY_RESULT_BACKEND=redis://localhost:6379/2
-MCP_SERVER_URL=http://m3-service:8001 
+MCP_SERVER_URL=http://localhost:8001
 LANGFUSE_SECRET_KEY=
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_BASE_URL="https://us.cloud.langfuse.com"
@@ -61,6 +61,12 @@ Run backend:
 make dev
 ```
 
+Run MCP tool server in another terminal:
+
+```bash
+make mcp
+```
+
 Run frontend in another terminal:
 
 ```bash
@@ -76,6 +82,7 @@ docker compose ps postgres redis
 uv run alembic current
 docker compose exec -T redis redis-cli ping
 uv run celery -A app.core.celery_app.celery_app report
+curl http://localhost:8001/health
 ```
 
 Start PostgreSQL + Redis and run migration:
@@ -100,6 +107,12 @@ Backend runs at:
 
 ```text
 http://127.0.0.1:8000
+```
+
+MCP tool server runs at:
+
+```text
+http://127.0.0.1:8001
 ```
 
 ## Database

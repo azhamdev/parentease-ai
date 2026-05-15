@@ -44,7 +44,7 @@ Chat auto vaccine tool   : tersedia
 Basic red flag handler   : tersedia
 RAG Chroma static PDFs   : tersedia lokal setelah ingest
 Tool call audit table    : tersedia untuk tracking pemanggilan tool
-MCP server               : belum dibuat
+MCP server               : tersedia minimal untuk calculate_vaccine_schedule
 Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
 Growth/z-score valid WHO : belum dibuat
 PDF upload               : belum dibuat
@@ -703,7 +703,7 @@ calculate_z_score       : masih placeholder
 Session/history         : tersedia dari merge M1, dipakai untuk profil/chat
 Vaccine history         : tersedia via endpoint profile vaccines
 Tool call audit         : tersedia via tabel toolcall
-MCP server              : belum dibuat
+MCP server              : tersedia via app/mcp_server.py
 Redis/Celery            : skeleton tersedia, belum dipakai flow aktif
 Alembic migration       : initial schema tersedia
 PostgreSQL              : tersedia via Docker Compose
@@ -735,11 +735,12 @@ Scope MVP M3 yang sudah dikerjakan:
 - Pre-retrieve Chroma untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
 - Basic medical red flag handler.
 - Date/number normalization untuk form frontend lokal Indonesia.
+- MCP server minimal untuk expose `calculate_vaccine_schedule`.
 
 Scope yang sengaja belum menjadi MVP:
 
 - Redis/Celery worker untuk flow upload/chat aktif.
-- MCP server transport.
+- MCP server tool tambahan selain `calculate_vaccine_schedule`.
 - Growth chart/z-score valid WHO.
 - Intent classifier berbasis model khusus.
 
@@ -755,6 +756,12 @@ docker compose up -d redis
 uv run alembic upgrade head
 uv run -m scripts.ingest_pdfs
 make dev
+```
+
+MCP server dijalankan dari terminal lain:
+
+```bash
+make mcp
 ```
 
 Frontend React dijalankan dari folder frontend:
@@ -774,6 +781,7 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
 REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/1
 CELERY_RESULT_BACKEND=redis://localhost:6379/2
+MCP_SERVER_URL=http://localhost:8001
 ```
 
 Catatan saat ini:
@@ -783,6 +791,7 @@ Catatan saat ini:
 - `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya PostgreSQL Docker.
 - `REDIS_URL` disiapkan untuk Redis session/cache usage.
 - `CELERY_BROKER_URL` dan `CELERY_RESULT_BACKEND` dipakai oleh `app/core/celery_app.py`.
+- `MCP_SERVER_URL` dipakai MCP client M1 untuk memanggil MCP server M3 di port 8001.
 - `chroma_db/` tidak di-commit, jadi setiap developer perlu ingest PDF sendiri.
 - `parentease.db` adalah sisa SQLite lokal lama dan tidak dipakai jika `DATABASE_URL` mengarah ke PostgreSQL.
 
@@ -1274,7 +1283,7 @@ Tambah BCG ke /profiles/{session_id}/vaccines
 Yang masih perlu diselesaikan setelah MVP:
 
 - Production/staging PostgreSQL credential management.
-- MCP server wrapper untuk `calculate_vaccine_schedule`.
+- MCP server tool tambahan dan hardening auth/rate limit.
 - Redis/Celery kalau ingestion/upload dibuat async.
 - Z-score/growth chart berbasis WHO, bukan placeholder.
 - Intent classifier yang lebih robust daripada keyword.

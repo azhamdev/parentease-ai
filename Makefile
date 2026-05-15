@@ -13,6 +13,9 @@ migrate: services
 dev: migrate
 	uv run uvicorn app.main:app --reload
 
+mcp:
+	uv run uvicorn app.mcp_server:app --port 8001 --reload
+
 worker: redis
 	uv run celery -A app.core.celery_app.celery_app worker --loglevel=info
 
