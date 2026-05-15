@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import asc
 from sqlmodel import Session, select
+from app.utils.cache import get_cached_profile, set_cached_profile, delete_cached_profile
 
 router = APIRouter(prefix="/profiles", tags=["child-profiles"])
 
@@ -156,7 +157,9 @@ async def update_child_profile(
     try:
         db_session.commit()
         db_session.refresh(profile)
-        logging.info("Profile updated successfully")
+        # INVALIDATE CACHE: Hapus cache lama agar tidak stale
+        await delete_cached_profile(session_id)
+        logging.info(f"🗑️ Invalidated cache for session: {session_id}")
     except Exception as e:
         logging.error(f"Failed to commit: {e}", exc_info=True)
         db_session.rollback()
@@ -181,22 +184,48 @@ async def get_child_profile(
 
     - **session_id**: ID session yang ingin diambil datanya
     """
-    logging.info(f"Get profile for session: {session_id}")
+    import logging
+    logging.info(f"📥 Get profile for session: {session_id}")
 
-    profile = _get_profile_or_404(session_id, db_session)
+     # ✅ 1. CEK CACHE REDIS DULU
+    cached_data = await get_cached_profile(session_id)
+    if cached_data:
+        logging.info(f"⚡ Cache hit for session: {session_id}")
+        # Return langsung dari cache (sesuaikan format response jika perlu)
+        return {
+            "session_id": session_id,
+            "nama_anak": cached_data.get("name"),
+            "tanggal_lahir": cached_data.get("birth_date"),
+            "gender": cached_data.get("gender"),
+            "berat_badan_kg": cached_data.get("weight_kg"),
+            "tinggi_badan_cm": cached_data.get("height_cm"),
+            # Usia dihitung ulang saat serve agar akurat
+            "usia_bulan": calculate_age_months(date.fromisoformat(cached_data["birth_date"])) 
+        }
 
-    response_data = {
+    # ✅ 2. CACHE MISS: Query DB
+    stmt = select(ChildProfile).where(ChildProfile.session_id == session_id)
+    profile = db_session.exec(stmt).first()
+    
+    if not profile:
+        raise HTTPException(status_code=404, detail="Session tidak ditemukan")
+    
+    # ✅ 3. SIMPAN KE CACHE
+    # Serialize model ke dict untuk disimpan di Redis
+    profile_dict = profile.model_dump()
+    await set_cached_profile(session_id, profile_dict)
+    logging.info(f"💾 Cached profile for session: {session_id}")
+    
+    # ✅ 4. Build response
+    return {
         "session_id": profile.session_id,
         "nama_anak": profile.name,
-        "tanggal_lahir": profile.birth_date.isoformat() if profile.birth_date else None,
+        "tanggal_lahir": profile.birth_date.isoformat(),
         "gender": profile.gender,
         "berat_badan_kg": profile.weight_kg,
         "tinggi_badan_cm": profile.height_cm,
-        "usia_bulan": calculate_age_months(profile.birth_date),
+        "usia_bulan": calculate_age_months(profile.birth_date)
     }
-
-    logging.info(f"Profile retrieved successfully for session: {session_id}")
-    return response_data
 
 
 @router.get("/{session_id}/vaccines", response_model=list[dict])

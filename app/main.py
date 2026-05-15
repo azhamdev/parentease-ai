@@ -1,5 +1,4 @@
 import pathlib
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from scalar_fastapi import get_scalar_api_reference
@@ -11,6 +10,8 @@ from app.api.v1.endpoints import tools
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.services.agent.mcp_client import disconnect_mcp_client
+from app.utils.langfuse_logger import init_langfuse
+from app.core.redis_client import init_redis, close_redis
 
 load_dotenv()
 
@@ -18,10 +19,13 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 async def lifespan(app: FastAPI):
     create_db_and_tables()
+    await init_redis()
+    init_langfuse()
+
     yield
 
-    # Shutdown: Cleanup MCP Client
     await disconnect_mcp_client()
+    await close_redis()
 
 app = FastAPI(title="ParentEase AI Backend", lifespan=lifespan)
 
