@@ -23,6 +23,9 @@ REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/1
 CELERY_RESULT_BACKEND=redis://localhost:6379/2
 MCP_SERVER_URL=http://m3-service:8001 
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_BASE_URL="https://us.cloud.langfuse.com"
 ```
 
 Install dependencies:

@@ -71,6 +71,7 @@ async def chat_endpoint_streaming(
                 user_message=request.message,
                 child_context=child_data,
                 tool_audit_callback=audit_tool_call,
+                session_id=x_session_id,
             ):
                 # Skip empty tokens
                 if not token or token.strip() == "":

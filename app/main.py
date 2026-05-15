@@ -11,6 +11,7 @@ from app.api.v1.endpoints import tools
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.services.agent.mcp_client import disconnect_mcp_client
+from app.utils.langfuse_logger import init_langfuse
 
 load_dotenv()
 
@@ -19,6 +20,8 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
+
+    init_langfuse()
 
     # Shutdown: Cleanup MCP Client
     await disconnect_mcp_client()
