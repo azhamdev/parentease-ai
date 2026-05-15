@@ -30,6 +30,20 @@ class GrowthMeasurement:
     height_cm: float | None = None
     head_circumference_cm: float | None = None
     notes: str | None = None
+    vaccination: str | None = None
+    milestone: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "measurement_date": self.measurement_date,
+            "age_months": self.age_months,
+            "weight_kg": self.weight_kg,
+            "height_cm": self.height_cm,
+            "head_circumference_cm": self.head_circumference_cm,
+            "notes": self.notes,
+            "vaccination": self.vaccination,
+            "milestone": self.milestone,
+        }
 
 
 @dataclass
@@ -81,6 +95,10 @@ class GrowthExtractionResult:
                     parts.append(f"head={m.head_circumference_cm}cm")
                 if m.notes:
                     parts.append(f"notes={m.notes}")
+                if m.vaccination:
+                    parts.append(f"vaccination={m.vaccination}")
+                if m.milestone:
+                    parts.append(f"milestone={m.milestone}")
                 lines.append(f"  {i}. {', '.join(parts)}")
         else:
             lines.append("No structured growth measurements could be extracted.")
@@ -157,13 +175,15 @@ Return a JSON object with this exact structure:
       "notes": "string or null",
       "milestone": "string or null",
       "nutrition": "string or null",
-      "immunization": "string or null"
+      "vaccination": "string or null"
     }
   ],
   "summary": "Brief summary of the document content in Indonesian"
 }
 
 Rules:
+- Always extract every possible measurement, even if incomplete. Partial data is still valuable.
+- Extract the child's name, birth date, parent's name (if available),
 - Extract EVERY measurement row you can find, even partial ones.
 - Convert all weights to kg (if given in grams, divide by 1000).
 - Convert all heights to cm.

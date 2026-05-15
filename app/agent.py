@@ -74,8 +74,6 @@ def calculate_z_score(weight_kg: float, age_months: int) -> str:
     # Placeholder for actual WHO calculation logic or external python sandbox execution
     return f"Calculated Z-score for {weight_kg}kg at {age_months} months is within normal limits (+0.5 SD)."
 
-
-# Define the tools schema for Mistral
 tools = [
     {
         "type": "function",

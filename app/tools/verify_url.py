@@ -108,7 +108,7 @@ def _search_rag(query: str, n_results: int = 5) -> tuple[list[str], list[dict]]:
     results = collection.query(query_embeddings=[embedding], n_results=n_results)
 
     docs: list[str] = results["documents"][0] if results["documents"] else []
-    metas: list[dict] = results["metadatas"][0] if results["metadatas"] else []
+    metas: list[dict] = results["metadatas"][0] if results["metadatas"] else []  # ty:ignore[invalid-assignment]
     return docs, metas
 
 
