@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
+from app.tools.verify_url import verify_url_source
+
 load_dotenv()
 
 EMBEDDING_MODEL = "openai/text-embedding-3-small"
@@ -107,6 +109,27 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_url_source",
+            "description": (
+                "Use this when the user sends a URL/link. "
+                "Extracts web content via Tavily, matches against RAG knowledge base, "
+                "and verifies whether the article is consistent with trusted pediatric references."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The full URL to verify (must start with http:// or https://)",
+                    }
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -115,7 +138,7 @@ def process_parent_query(user_message: str, child_context: dict | None = None) -
     Run the agentic loop and return {"response": str, "sources": list[dict]}.
     child_context: dict dengan keys: birth_date, gender, name, weight_kg, height_cm, topic
     """
-    
+
     # 📅 Tanggal hari ini
     today = date.today()
     today_str = today.strftime("%d %B %Y")
@@ -126,20 +149,19 @@ def process_parent_query(user_message: str, child_context: dict | None = None) -
         f"Tanggal hari ini adalah **{today_str}**. "
         f"ALWAYS use your tools to fetch medical data or calculate growth. Never hallucinate. "
         f"Reply in Indonesian with warm, empathetic, and professional tone.\n\n"
-        
         f"👥 PANDUAN MENYAPA (WAJIB): "
         f"Sapa pengguna sebagai 'Parent'. Gunakan sapaan yang inklusif untuk Ibu maupun Ayah, "
         f"seperti 'Bunda atau Ayah', 'Ayah/Bunda', atau 'Anda'. JANGAN mengasumsikan gender orangtua. "
         f"Akui peran mereka sebagai pengasuh yang peduli. "
         f"Contoh aman: 'Baik, Bunda/Papa, berikut info untuk si kecil...' atau 'Sebagai orangtua yang perhatian, pertanyaan Anda sangat relevan...'"
     )
-    
+
     # ✅ Injeksi data anak jika ada
     if child_context:
         birth_date_str = child_context.get("birth_date")
         age_months = 0
         age_years = 0
-        
+
         if birth_date_str:
             try:
                 # Hitung usia dari birth_date
@@ -151,28 +173,30 @@ def process_parent_query(user_message: str, child_context: dict | None = None) -
             except Exception as e:
                 print(f"⚠️ Error calculating age: {e}")
                 total_months = 0
-        
+
         base_prompt += f"\n\n📋 CURRENT CHILD PROFILE (USE THIS DATA):\n"
         base_prompt += f"- Name: {child_context.get('name', 'Unknown')}\n"
         base_prompt += f"- Birth Date: {child_context.get('birth_date', 'Unknown')}\n"
         base_prompt += f"- Age: {total_months} months"
-        
+
         if age_years > 0:
             base_prompt += f" ({age_years} year(s) and {age_months} month(s))"
         base_prompt += "\n"
-        
+
         base_prompt += f"- Gender: {child_context.get('gender', 'Unknown')}\n"
-        
-        if child_context.get('weight_kg'):
+
+        if child_context.get("weight_kg"):
             base_prompt += f"- Weight: {child_context['weight_kg']} kg\n"
-        if child_context.get('height_cm'):
+        if child_context.get("height_cm"):
             base_prompt += f"- Height: {child_context['height_cm']} cm\n"
-        if child_context.get('topic'):
+        if child_context.get("topic"):
             base_prompt += f"- Parent Focus: {child_context['topic']}\n"
-        
+
         base_prompt += "\n⚠️ ALWAYS use this child's data to answer questions. "
         base_prompt += "If user asks about THEIR child, use the data above. "
-        base_prompt += f"Calculate age based on today's date ({today_str}) and birth_date.\n"
+        base_prompt += (
+            f"Calculate age based on today's date ({today_str}) and birth_date.\n"
+        )
 
     messages = [
         {"role": "system", "content": base_prompt},
@@ -198,28 +222,35 @@ def process_parent_query(user_message: str, child_context: dict | None = None) -
             function_args = json.loads(tool_call.function.arguments)
 
             if function_name == "search_medical_guidelines":
-                tool_result, sources = search_medical_guidelines(function_args.get("query"))
+                tool_result, sources = search_medical_guidelines(
+                    function_args.get("query")
+                )
                 all_sources.extend(sources)
             elif function_name == "calculate_z_score":
                 tool_result = calculate_z_score(
-                    function_args.get("weight_kg"), 
-                    function_args.get("age_months")
+                    function_args.get("weight_kg"), function_args.get("age_months")
                 )
+            elif function_name == "verify_url_source":
+                verification = verify_url_source(function_args.get("url", ""))
+                tool_result = verification.to_tool_string()
+                all_sources.extend(verification.rag_sources)
             else:
                 tool_result = "Unknown tool."
 
-            messages.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "name": function_name,
-                "content": str(tool_result),
-            })
+            messages.append(
+                {
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": str(tool_result),
+                }
+            )
 
         second_response = client.chat.completions.create(
             model="mistralai/mistral-large",
             messages=messages,
         )
-        
+
         seen: set[tuple] = set()
         unique_sources: list[dict] = []
         for s in all_sources:
@@ -227,7 +258,7 @@ def process_parent_query(user_message: str, child_context: dict | None = None) -
             if key not in seen:
                 seen.add(key)
                 unique_sources.append(s)
-                
+
         return {
             "response": second_response.choices[0].message.content,
             "sources": unique_sources,

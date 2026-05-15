@@ -7,14 +7,16 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 from datetime import date
 from dateutil.relativedelta import relativedelta
 import chromadb
-  
+
 from app.tools.schemas import VaccineScheduleRequest
 from app.tools.vaccine_schedule import calculate_vaccine_schedule
 from app.tools.red_flags import detect_red_flags
+from app.tools.verify_url import verify_url_source, extract_urls
 
 from app.utils.langfuse_logger import langfuse_client
 from langfuse import observe, propagate_attributes
 from langfuse.openai import openai as langfuse_openai
+
 
 # --- ✅ MCP CLIENT SETUP ---
 async def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
@@ -22,33 +24,31 @@ async def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
     Memanggil MCP Server (M3) untuk eksekusi tool.
     """
     mcp_url = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
-    
+
     # Payload standar JSON-RPC 2.0
     payload = {
         "jsonrpc": "2.0",
         "id": "1",
         "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments
-        }
+        "params": {"name": tool_name, "arguments": arguments},
     }
-    
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             print(f"🔌 Calling MCP Server: {mcp_url}/rpc -> {tool_name}")
             response = await client.post(f"{mcp_url}/rpc", json=payload)
             response.raise_for_status()
             result = response.json()
-            
+
             if "error" in result:
                 raise Exception(result["error"].get("message", "MCP Server Error"))
-            
+
             return result.get("result", {})
         except httpx.HTTPStatusError as e:
             raise Exception(f"MCP HTTP Error: {e.response.status_code}")
         except Exception as e:
             raise Exception(f"MCP Connection Failed: {str(e)}")
+
 
 # --- OPENAI CLIENTS ---
 def get_async_client():
@@ -57,26 +57,32 @@ def get_async_client():
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
     )
 
+
 def get_sync_client():
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
     )
 
+
 # --- CHROMADB SETUP (M2) ---
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 COLLECTION_NAME = "pediatric_guidelines"
 
+
 def _get_collection():
     return chroma_client.get_or_create_collection(name=COLLECTION_NAME)
+
 
 def _embed_query(text: str) -> list[float]:
     client = get_sync_client()
     resp = client.embeddings.create(model="openai/text-embedding-3-small", input=[text])
     return resp.data[0].embedding
 
+
 def format_title(filename: str) -> str:
     return filename.removesuffix(".pdf").replace("_", " ").replace("-", " ").title()
+
 
 @observe()
 def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
@@ -84,9 +90,13 @@ def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
     emb = _embed_query(query)
     res = _get_collection().query(query_embeddings=[emb], n_results=3)
     if res["documents"] and res["documents"][0]:
-        sources = [{"title": format_title(m.get("source", "Unknown")), "page": m.get("page")} for m in res["metadatas"][0]]
+        sources = [
+            {"title": format_title(m.get("source", "Unknown")), "page": m.get("page")}
+            for m in res["metadatas"][0]
+        ]
         return "\n\n---\n\n".join(res["documents"][0]), sources
     return "Tidak ditemukan panduan medis yang relevan.", []
+
 
 # --- TOOLS SCHEMA (UNTUK LLM) ---
 TOOLS: list[ChatCompletionToolParam] = [
@@ -98,9 +108,9 @@ TOOLS: list[ChatCompletionToolParam] = [
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
     {
         "type": "function",
@@ -110,26 +120,104 @@ TOOLS: list[ChatCompletionToolParam] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "birth_date": {"type": "string", "description": "Tanggal lahir anak (YYYY-MM-DD)"},
-                    "completed_vaccines": {"type": "array", "items": {"type": "string"}, "description": "Daftar kode vaksin yang sudah diberikan (opsional)"}
+                    "birth_date": {
+                        "type": "string",
+                        "description": "Tanggal lahir anak (YYYY-MM-DD)",
+                    },
+                    "completed_vaccines": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Daftar kode vaksin yang sudah diberikan (opsional)",
+                    },
                 },
-                "required": ["birth_date"]
-            }
-        }
-    }
+                "required": ["birth_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_url_source",
+            "description": (
+                "Gunakan tool ini ketika user mengirimkan URL/link artikel. "
+                "Tool akan mengekstrak konten dari URL menggunakan Tavily, "
+                "mencocokkan dengan sumber RAG (knowledge base pediatrik), "
+                "dan memberikan verifikasi apakah isi artikel tersebut valid "
+                "dan sesuai dengan referensi terpercaya."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL lengkap artikel yang akan diverifikasi (harus dimulai dengan http:// atau https://)",
+                    }
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
-MEDICAL_KEYWORDS = ("asi", "mpasi", "makan", "menyusui", "susu", "vaksin", "imunisasi", "bcg", "dpt", "polio", "pcv", "rotavirus", "campak", "rubella", "tumbuh", "kembang", "berat", "tinggi", "demam", "batuk", "diare", "stunting", "posyandu", "bayi", "anak")
-VACCINE_KEYWORDS = ("vaksin", "vaksinasi", "imunisasi", "bcg", "dpt", "polio", "pcv", "rotavirus", "campak", "rubella", "mr", "hb0", "hepatitis")
+MEDICAL_KEYWORDS = (
+    "asi",
+    "mpasi",
+    "makan",
+    "menyusui",
+    "susu",
+    "vaksin",
+    "imunisasi",
+    "bcg",
+    "dpt",
+    "polio",
+    "pcv",
+    "rotavirus",
+    "campak",
+    "rubella",
+    "tumbuh",
+    "kembang",
+    "berat",
+    "tinggi",
+    "demam",
+    "batuk",
+    "diare",
+    "stunting",
+    "posyandu",
+    "bayi",
+    "anak",
+)
+VACCINE_KEYWORDS = (
+    "vaksin",
+    "vaksinasi",
+    "imunisasi",
+    "bcg",
+    "dpt",
+    "polio",
+    "pcv",
+    "rotavirus",
+    "campak",
+    "rubella",
+    "mr",
+    "hb0",
+    "hepatitis",
+)
+
+
+def should_verify_url(message: str) -> bool:
+    """Return True when the user message contains at least one URL."""
+    return bool(extract_urls(message))
+
 
 def should_retrieve_guidelines(message: str) -> bool:
     text = message.lower()
     return any(keyword in text for keyword in MEDICAL_KEYWORDS)
 
+
 @observe()
 def should_calculate_vaccine_schedule(message: str) -> bool:
     text = message.lower()
     return any(keyword in text for keyword in VACCINE_KEYWORDS)
+
 
 @observe()
 def _unique_sources(sources: list[dict]) -> list[dict]:
@@ -142,15 +230,17 @@ def _unique_sources(sources: list[dict]) -> list[dict]:
             unique_sources.append(source)
     return unique_sources
 
+
 @observe()
 def _format_vaccine_schedule_result(result) -> str:
     def item_lines(title: str, items: list) -> list[str]:
-        if not items: return [f"{title}: tidak ada."]
+        if not items:
+            return [f"{title}: tidak ada."]
         lines = [f"{title}:"]
         for item in items:
             lines.append(f"- {item.label} ({item.due_age_label})")
         return lines
-    
+
     lines = [
         f"Status: {result.status}",
         f"Usia anak: {result.age_months} bulan ({result.age_days} hari)",
@@ -164,6 +254,7 @@ def _format_vaccine_schedule_result(result) -> str:
         lines.extend(f"- {warning}" for warning in result.warnings)
     return "\n".join(lines)
 
+
 # --- MAIN STREAMING FUNCTION ---
 @observe()
 async def stream_chat_response(
@@ -176,14 +267,13 @@ async def stream_chat_response(
         async_client = get_async_client()
         today = date.today()
         today_str = today.strftime("%d %B %Y")
-        
+
         # Base Prompt Construction
         base_prompt = (
             f"Anda adalah ParentEase AI, asisten parenting berbasis bukti ilmiah. "
             f"Tanggal hari ini: {today_str}. "
             f"Selalu gunakan tools untuk data medis dan gunakan sumber dari data yang sudah tersedia baik dari pdf atau file lainnya. Jangan mengarang. "
             f"Jawab dalam Bahasa Indonesia dengan nada hangat dan profesional.\n\n"
-            
             # ✅ BATASAN TOPIK
             f"🚫 **BATASAN TOPIK YANG WAJIB DIPATUHI**:\n"
             f"- Anda HANYA boleh membahas topik seputar:\n"
@@ -197,7 +287,6 @@ async def stream_chat_response(
             f"  - Topik dewasa yang tidak berkaitan dengan parenting\n"
             f"  - Atau topik non-parenting lainnya\n"
             f"- Jika user bertanya di luar scope, TOLAK dengan sopan dan arahkan kembali ke topik parenting.\n\n"
-            
             f"👥 SAPAAN: Gunakan 'Bunda/Ayah', 'Anda', atau 'Parent'. Jangan asumsikan gender.\n\n"
             f"📝 ATURAN FORMAT WAJIB (IKUTI PERSIS):\n\n"
             f"1. STRUKTUR JAWABAN:\n"
@@ -211,7 +300,6 @@ async def stream_chat_response(
             f"    - Sub poin level 1 (2 spasi sebelum -)\n"
             f"      - Sub poin level 2 (4 spasi sebelum -)\n"
             f"  - Poin utama berikutnya\n\n"
-            
             f"**3. CONTOH FORMAT YANG BENAR:**\n"
             f"**1. Kapan Mulai MPASI?**\n"
             f"- **Usia ideal**: 6 bulan\n"
@@ -222,26 +310,22 @@ async def stream_chat_response(
             f"- **Yang harus dihindari**:\n"
             f"  - Mulai sebelum 4 bulan\n"
             f"  - Terlalu lama menunda\n\n"
-            
             f"**4. FORMATTING TEXT:**\n"
             f"- Gunakan **bold** untuk istilah penting dan angka kunci\n"
             f"- Jangan gunakan ### atau #### (cukup bold dengan **text**)\n"
             f"- Jangan gunakan --- (horizontal rule)\n"
             f"- Gunakan paragraf pendek (2-3 kalimat)\n"
             f"- Beri 1 baris kosong antar section\n\n"
-            
             f"**5. LARANGAN KERAS:**\n"
             f"- JANGAN gunakan #### atau ###\n"
             f"- JANGAN gunakan ---\n"
             f"- JANGAN gabungkan kata tanpa spasi\n"
             f"- JANGAN buat list tanpa indentasi untuk sub-poin\n"
             f"- JANGAN bahas topik di luar parenting (teknologi, politik, dll)\n\n"
-            
             f"**6. SPASI  & PARAGRAF:**\n"
             f"- SELALU beri spasi antar kata\n"
             f"- Beri jarak 1 baris kosong antar section utama\n"
             f"- Gunakan paragraf pendek agar mudah dibaca\n"
-
             f"\n**CONTOH RESPONSE YANG BAIK:**\n\n"
             f"Halo Parent! 👋 Berikut informasi untuk Anda:\n\n"
             f"**1. Usia Ideal MPASI**\n"
@@ -258,7 +342,6 @@ async def stream_chat_response(
             f"- **Kelompok protein**:\n"
             f"  - Ayam cincang halus\n"
             f"  - Ikan tanpa duri\n\n"
-            
             # ✅ CONTOH PENOLAKAN TOPIK DI LUAR SCOPE
             f"\n**CONTOH CARA MENOLAK TOPIK DI LUAR SCOPE:**\n"
             f"- Jika user tanya: 'Apa itu JavaScript?'\n"
@@ -275,17 +358,21 @@ async def stream_chat_response(
             age_months = 0
             if birth:
                 try:
-                    parsed_birth = birth if isinstance(birth, date) else date.fromisoformat(birth)
-                    delta = relativedelta(today,  parsed_birth)
+                    parsed_birth = (
+                        birth if isinstance(birth, date) else date.fromisoformat(birth)
+                    )
+                    delta = relativedelta(today, parsed_birth)
                     age_months = delta.years * 12 + delta.months
                 except (TypeError, ValueError):
                     age_months = 0
-            base_prompt += f"\n📋 DATA ANAK:\n- Nama: {child_context.get('name', '-')}\n "
+            base_prompt += (
+                f"\n📋 DATA ANAK:\n- Nama: {child_context.get('name', '-')}\n "
+            )
             base_prompt += f"- Lahir: {birth}\n- Usia: {age_months} bulan\n "
             base_prompt += f"- Gender: {child_context.get('gender', '-')}\n "
-            if child_context.get('weight_kg'):
+            if child_context.get("weight_kg"):
                 base_prompt += f"- Berat: {child_context['weight_kg']} kg\n "
-            if child_context.get('height_cm'):
+            if child_context.get("height_cm"):
                 base_prompt += f"- Tinggi: {child_context['height_cm']} cm\n "
 
         red_flag = detect_red_flags(user_message, child_context)
@@ -303,7 +390,9 @@ async def stream_chat_response(
         retrieved_sources: list[dict] = []
         if should_retrieve_guidelines(user_message):
             try:
-                retrieved_context, retrieved_sources = search_medical_guidelines(user_message)
+                retrieved_context, retrieved_sources = search_medical_guidelines(
+                    user_message
+                )
                 print(f"🔍 Pre-retrieved {len(retrieved_sources)} source(s)")
                 base_prompt += (
                     "\n\n📚 KONTEKS DARI KNOWLEDGE BASE:\n"
@@ -320,9 +409,13 @@ async def stream_chat_response(
             if birth_date:
                 try:
                     parsed_birth_date = (
-                        birth_date if isinstance(birth_date, date) else date.fromisoformat(birth_date)
+                        birth_date
+                        if isinstance(birth_date, date)
+                        else date.fromisoformat(birth_date)
                     )
-                    completed_vaccines = vaccine_child_context.get("completed_vaccines", [])
+                    completed_vaccines = vaccine_child_context.get(
+                        "completed_vaccines", []
+                    )
                     if not isinstance(completed_vaccines, list):
                         completed_vaccines = []
                     vaccine_result = calculate_vaccine_schedule(
@@ -342,7 +435,9 @@ async def stream_chat_response(
                                     "as_of_date": today.isoformat(),
                                     "completed_vaccines": completed_vaccines,
                                 },
-                                "output_payload": vaccine_result.model_dump(mode="json"),
+                                "output_payload": vaccine_result.model_dump(
+                                    mode="json"
+                                ),
                                 "sources": [
                                     source.model_dump(mode="json")
                                     for source in vaccine_result.sources
@@ -368,6 +463,46 @@ async def stream_chat_response(
                     "Minta tanggal lahir anak sebelum menghitung jadwal vaksin personal."
                 )
 
+        # --- URL VERIFICATION (pre-retrieval) ---
+        if should_verify_url(user_message):
+            urls = extract_urls(user_message)
+            for target_url in urls[:3]:  # limit to 3 URLs per message
+                try:
+                    print(f"🔗 Verifying URL: {target_url}")
+                    verification = verify_url_source(target_url)
+                    if tool_audit_callback:
+                        tool_audit_callback(
+                            {
+                                "tool_name": "verify_url_source",
+                                "status": verification.verdict,
+                                "input_payload": {"url": target_url},
+                                "output_payload": {
+                                    "verdict": verification.verdict,
+                                    "web_summary": verification.web_summary[:500],
+                                    "explanation": verification.explanation,
+                                    "matched_count": len(
+                                        verification.matched_rag_excerpts
+                                    ),
+                                },
+                                "sources": verification.rag_sources,
+                            }
+                        )
+                    base_prompt += (
+                        f"\n\n🔗 HASIL VERIFIKASI URL ({target_url}):\n"
+                        f"{verification.to_tool_string()}\n\n"
+                        "Gunakan hasil verifikasi di atas untuk menjawab user. "
+                        "Jelaskan apakah artikel tersebut sesuai, sebagian sesuai, "
+                        "atau tidak sesuai dengan referensi terpercaya di knowledge base. "
+                        "Jika verdict 'supported', sampaikan bahwa informasi tersebut "
+                        "konsisten dengan panduan medis. "
+                        "Jika 'partially_supported', sebutkan bagian mana yang sesuai dan mana yang tidak. "
+                        "Jika 'not_supported' atau 'no_match', peringatkan user agar hati-hati "
+                        "dan sarankan merujuk ke sumber terpercaya atau konsultasi tenaga kesehatan."
+                    )
+                    retrieved_sources.extend(verification.rag_sources)
+                except Exception as url_err:
+                    print(f"⚠️ URL verification error: {url_err}")
+
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": base_prompt},
             {"role": "user", "content": user_message},
@@ -379,13 +514,13 @@ async def stream_chat_response(
         if langfuse_client is not None:
             try:
                 trace_method = getattr(langfuse_client, "trace", None)
-                
+
                 if trace_method is not None:
                     trace = trace_method(
                         name="parentease_chat",
                         session_id=session_id,
                         user_id=child_context.get("name") if child_context else None,
-                        metadata={"model": "mistralai/mistral-large"}
+                        metadata={"model": "mistralai/mistral-large"},
                     )
             except Exception as e:
                 print(f"⚠️ Langfuse trace creation failed: {e}")
@@ -393,11 +528,12 @@ async def stream_chat_response(
 
         # LANGFUSE: Safe Client Selection
         # Jika langfuse aktif, gunakan client ter-instrumentasi. Jika tidak, pakai async_client biasa.
-        llm_client: AsyncOpenAI = async_client 
+        llm_client: AsyncOpenAI = async_client
 
         if langfuse_client is not None:
             try:
                 from langfuse.openai import openai as langfuse_openai
+
                 # Wrapper Langfuse mewarisi AsyncOpenAI, jadi assignment ini valid
                 llm_client = langfuse_openai.AsyncOpenAI(
                     base_url="https://openrouter.ai/api/v1",
@@ -407,7 +543,7 @@ async def stream_chat_response(
                 # Jika langfuse openai wrapper tidak ada, tetap gunakan async_client default
                 pass
 
-        try:        
+        try:
             # 🔍 LOG: Check ChromaDB status
             try:
                 collection = _get_collection()
@@ -415,7 +551,7 @@ async def stream_chat_response(
                 print(f"📚 ChromaDB has {count} documents")
             except Exception as db_err:
                 print(f"⚠️ ChromaDB check error: {db_err}")
-            
+
             stream = await llm_client.chat.completions.create(
                 model="mistralai/mistral-large",
                 messages=messages,
@@ -423,7 +559,7 @@ async def stream_chat_response(
                 tool_choice="auto",
                 stream=True,
             )
-            
+
             tool_calls_buffer = []
             has_tools = False
             _last_char = ""
@@ -433,7 +569,12 @@ async def stream_chat_response(
                 token = chunk.choices[0].delta.content
                 if token:
                     # Auto-space
-                    if _last_char and _last_char.isalnum() and len(token) > 0 and token[0].isalnum():
+                    if (
+                        _last_char
+                        and _last_char.isalnum()
+                        and len(token) > 0
+                        and token[0].isalnum()
+                    ):
                         yield " "
                     yield token
                     _last_char = token[-1]
@@ -441,7 +582,10 @@ async def stream_chat_response(
                 if chunk.choices[0].delta.tool_calls:
                     has_tools = True
                     for tc in chunk.choices[0].delta.tool_calls:
-                        if not tool_calls_buffer or tool_calls_buffer[-1].get("index") != tc.index:
+                        if (
+                            not tool_calls_buffer
+                            or tool_calls_buffer[-1].get("index") != tc.index
+                        ):
                             tool_calls_buffer.append(
                                 {
                                     "index": tc.index,
@@ -454,7 +598,9 @@ async def stream_chat_response(
                             target["function"] = {"name": "", "arguments": ""}
                         function = target["function"]
                         if tc.function and tc.function.name:
-                            function["name"] = f"{function.get('name', '')}{tc.function.name}"
+                            function["name"] = (
+                                f"{function.get('name', '')}{tc.function.name}"
+                            )
                         if tc.function and tc.function.arguments:
                             function["arguments"] = (
                                 f"{function.get('arguments', '')}{tc.function.arguments}"
@@ -464,14 +610,20 @@ async def stream_chat_response(
             all_sources = list(retrieved_sources)
             if has_tools and tool_calls_buffer:
                 print(f"🔧 Executing {len(tool_calls_buffer)} tool call(s)")
-                messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls_buffer})
-                
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls_buffer,
+                    }
+                )
+
                 for tc in tool_calls_buffer:
                     try:
-                        args = json.loads(tc[ "function "][ "arguments "])
-                        tool_name = tc[ "function "][ "name "]
-                        print(f"🔍 Tool Requested: {tool_name} with args: {args} ")
-                        
+                        args = json.loads(tc["function"]["arguments"])
+                        tool_name = tc["function"]["name"]
+                        print(f"🔍 Tool Requested: {tool_name} with args: {args}")
+
                         # ✅ MCP INTEGRATION LOGIC
                         if tool_name == "calculate_vaccine_schedule":
                             print(f"🔌 Routing to MCP Server...")
@@ -480,47 +632,55 @@ async def stream_chat_response(
                                 # Convert MCP result (dict) to JSON string for LLM
                                 res = json.dumps(mcp_result, ensure_ascii=False)
                                 # Extract sources if available in MCP result
-                                srcs = mcp_result.get("sources", []) 
+                                srcs = mcp_result.get("sources", [])
                             except Exception as mcp_err:
                                 print(f"❌ MCP Execution Error: {mcp_err}")
                                 res = f"Error calling tool via MCP: {mcp_err}"
                                 srcs = []
-                                
+
                         elif tool_name == "search_medical_guidelines":
                             # Fallback ke local logic (M2 Scope)
-                            query = args.get("query", " ")
-                            print(f"🔍 Searching locally for: {query} ")
+                            query = args.get("query", "")
+                            print(f"🔍 Searching locally for: {query}")
                             res, srcs = search_medical_guidelines(query)
-                            print(f"✅ Found {len(srcs)} source(s) ")
+                            print(f"✅ Found {len(srcs)} source(s)")
+                        elif tool_name == "verify_url_source":
+                            target_url = args.get("url", "")
+                            print(f"🔗 LLM requested URL verification: {target_url}")
+                            verification = verify_url_source(target_url)
+                            res = verification.to_tool_string()
+                            srcs = verification.rag_sources
+                            print(f"✅ URL verdict: {verification.verdict}")
                         else:
                             res = f"Tool {tool_name} tidak dikenali."
                             srcs = []
-                        
+
                         all_sources.extend(srcs)
                         messages.append(
                             cast(
                                 ChatCompletionMessageParam,
                                 {
-                                    "role ":  "tool ",
-                                    "tool_call_id ": tc[ "id "],
-                                    "name ": tool_name,
-                                    "content ": res,
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "name": tool_name,
+                                    "content": res,
                                 },
                             )
                         )
                     except Exception as tool_err:
-                        print(f"❌ Tool execution error: {tool_err} ")
+                        print(f"❌ Tool execution error: {tool_err}")
                         import traceback
+
                         traceback.print_exc()
                         messages.append(
                             cast(
                                 ChatCompletionMessageParam,
                                 {
-                                    "role ":  "tool ",
-                                    "tool_call_id ": tc[ "id "],
-                                    "name ": tool_name,
-                                    "content ": (
-                                        "Maaf, tidak dapat mengakses informasi medis saat ini. "
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "name": tool_name,
+                                    "content": (
+                                        "Maaf, tidak dapat mengakses informasi medis saat ini."
                                     ),
                                 },
                             )
@@ -532,30 +692,35 @@ async def stream_chat_response(
                     final_stream = await async_client.chat.completions.create(
                         model="mistralai/mistral-large", messages=messages, stream=True
                     )
-                    
+
                     final_content = ""
                     async for chunk in final_stream:
                         token = chunk.choices[0].delta.content
                         if token:
                             # Auto-space
-                            if _last_char and _last_char.isalnum() and len(token) > 0 and token[0].isalnum():
+                            if (
+                                _last_char
+                                and _last_char.isalnum()
+                                and len(token) > 0
+                                and token[0].isalnum()
+                            ):
                                 yield " "
                             yield token
                             _last_char = token[-1]
                             final_content += token
-                    
+
                     if not final_content:
                         print("⚠️ WARNING: Final stream returned empty content!")
                         # Fallback: berikan pesan default
                         yield "\n\nMaaf, saya tidak dapat menemukan informasi spesifik untuk pertanyaan ini. Silakan konsultasikan dengan tenaga medis."
-                        
+
                 except Exception as final_err:
                     print(f"❌ Final stream error: {final_err}")
                     yield "\n\nMaaf, terjadi gangguan teknis saat menyusun jawaban."
 
                 # 4️⃣ Kirim sources
                 unique_sources = _unique_sources(all_sources)
-                
+
                 if unique_sources:
                     print(f"📎 Sending {len(unique_sources)} source(s) to frontend")
                     yield f"\n\n[SOURCES] {json.dumps(unique_sources)}\n\n"
@@ -566,17 +731,16 @@ async def stream_chat_response(
                 print("ℹ️ No tool calls detected - direct response")
                 unique_sources = _unique_sources(retrieved_sources)
                 if unique_sources:
-                    print(f"📎 Sending {len(unique_sources)} pre-retrieved source(s) to frontend")
+                    print(
+                        f"📎 Sending {len(unique_sources)} pre-retrieved source(s) to frontend"
+                    )
                     yield f"\n\n[SOURCES] {json.dumps(unique_sources)}\n\n"
 
             # ✅ LANGFUSE: Update trace pada success (Safe check)
             if trace:
                 try:
                     trace.update(
-                        output={
-                            "status": "completed",
-                            "tools_executed": has_tools
-                        }
+                        output={"status": "completed", "tools_executed": has_tools}
                     )
                 except Exception as trace_err:
                     print(f"⚠️ Failed to update trace: {trace_err}")
@@ -584,17 +748,15 @@ async def stream_chat_response(
         except Exception as e:
             print(f"❌ Streaming error: {e}")
             import traceback
+
             traceback.print_exc()
-            
+
             # LANGFUSE: Catat error ke trace
             if trace:
                 try:
-                    trace.update(
-                        output={"error": str(e)},
-                        level="ERROR"
-                    )
+                    trace.update(output={"error": str(e)}, level="ERROR")
                 except Exception as trace_err:
                     print(f"⚠️ Failed to update trace with error: {trace_err}")
-            
+
             yield f"\n\n❌ Terjadi kesalahan: {str(e)}"
             raise
