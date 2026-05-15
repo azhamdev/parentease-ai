@@ -45,6 +45,7 @@ class GrowthExtractionResult:
     child_gender: str | None = None
     summary: str = ""
     error: str | None = None
+    parent_name: str | None = None
 
     def to_tool_string(self) -> str:
         """Serialise for the LLM system prompt."""
@@ -60,6 +61,8 @@ class GrowthExtractionResult:
             lines.append(f"Birth date: {self.child_birth_date}")
         if self.child_gender:
             lines.append(f"Gender: {self.child_gender}")
+        if self.parent_name:
+            lines.append(f"Parent name: {self.parent_name}")
 
         if self.measurements:
             lines.append(f"Total measurements extracted: {len(self.measurements)}")
@@ -95,7 +98,7 @@ class GrowthExtractionResult:
 
 def _ocr_pdf_with_mistral(pdf_bytes: bytes, filename: str) -> str:
     """Send PDF to Mistral OCR API and return the extracted text."""
-    from mistralai import Mistral
+    from mistralai.client import Mistral
 
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
@@ -143,6 +146,7 @@ Return a JSON object with this exact structure:
   "child_name": "string or null",
   "child_birth_date": "YYYY-MM-DD or null",
   "child_gender": "L or P or null",
+  "parent_name": "string or null",
   "measurements": [
     {
       "measurement_date": "YYYY-MM-DD or null",
@@ -150,7 +154,10 @@ Return a JSON object with this exact structure:
       "weight_kg": float or null,
       "height_cm": float or null,
       "head_circumference_cm": float or null,
-      "notes": "string or null"
+      "notes": "string or null",
+      "milestone": "string or null",
+      "nutrition": "string or null",
+      "immunization": "string or null"
     }
   ],
   "summary": "Brief summary of the document content in Indonesian"
@@ -169,7 +176,7 @@ Rules:
 
 def _parse_growth_data_with_llm(ocr_text: str) -> dict:
     """Use Mistral LLM to parse structured growth data from OCR text."""
-    from mistralai import Mistral
+    from mistralai.client import Mistral
 
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
