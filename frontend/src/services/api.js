@@ -227,3 +227,79 @@ export const deleteSession = async (sessionId) => {
   }
   return res.json();
 };
+
+export const uploadPDF = async (sessionId, file, message, onChunk) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (message) formData.append("message", message);
+
+  const res = await fetch(`${API_URL}/chat/upload-pdf`, {
+    method: "POST",
+    headers: { "X-Session-ID": sessionId },
+    body: formData,
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || `Upload failed: HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullResponse = "";
+  let sources = [];
+  let lastChar = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (line === "") continue;
+
+      let data = "";
+      if (line.startsWith("data: ")) {
+        data = line.slice(6);
+      } else {
+        data = line;
+      }
+      if (data === "") continue;
+
+      const clean = data.trim();
+      if (clean === "[DONE]") break;
+      if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
+      if (clean.startsWith("[SOURCES]")) {
+        try { sources = JSON.parse(clean.replace(/^\[SOURCES\]\s*/, "")); } catch { sources = []; }
+        continue;
+      }
+
+      if (lastChar && /[!.,:;]/.test(lastChar) && data && !data.startsWith(" ") && !data.startsWith("\n")) {
+        fullResponse += " ";
+        onChunk(" ");
+      }
+
+      fullResponse += data;
+      onChunk(data);
+
+      if (data) {
+        lastChar = data[data.length - 1];
+      }
+    }
+  }
+
+  const inlineSourcesMatch = fullResponse.match(/\[SOURCES\]\s*(\[[\s\S]*?\])/);
+  if (inlineSourcesMatch) {
+    try {
+      sources = JSON.parse(inlineSourcesMatch[1]);
+      fullResponse = fullResponse.replace(/\[SOURCES\]\s*\[[\s\S]*?\]/, "").trim();
+    } catch {
+      sources = [];
+    }
+  }
+
+  return { response: fullResponse, sources };
+};

@@ -159,6 +159,29 @@ TOOLS: list[ChatCompletionToolParam] = [
     },
 ]
 
+GROWTH_KEYWORDS = (
+    "tumbuh",
+    "kembang",
+    "berat",
+    "tinggi",
+    "pertumbuhan",
+    "perkembangan",
+    "kms",
+    "posyandu",
+    "stunting",
+    "gizi",
+    "nutrisi",
+    "z-score",
+    "growth",
+    "berat badan",
+    "tinggi badan",
+    "lingkar kepala",
+    "grafik",
+    "kurva",
+    "pdf",
+    "upload",
+)
+
 MEDICAL_KEYWORDS = (
     "asi",
     "mpasi",
@@ -206,6 +229,64 @@ VACCINE_KEYWORDS = (
 def should_verify_url(message: str) -> bool:
     """Return True when the user message contains at least one URL."""
     return bool(extract_urls(message))
+
+
+def should_include_growth_data(message: str) -> bool:
+    """Return True when the message might benefit from growth record context."""
+    text = message.lower()
+    return any(keyword in text for keyword in GROWTH_KEYWORDS)
+
+
+def get_growth_records_for_session(session_id: str) -> list[dict]:
+    """Fetch saved growth records from the database for a session."""
+    from sqlmodel import Session as DBSession, select
+    from app.database import engine
+    from app.models import GrowthRecord
+
+    with DBSession(engine) as db:
+        stmt = (
+            select(GrowthRecord)
+            .where(GrowthRecord.session_id == session_id)
+            .order_by(GrowthRecord.age_months.asc())  # type: ignore[union-attr]
+        )
+        records = db.exec(stmt).all()
+        return [
+            {
+                "measurement_date": r.measurement_date.isoformat()
+                if r.measurement_date
+                else None,
+                "age_months": r.age_months,
+                "weight_kg": r.weight_kg,
+                "height_cm": r.height_cm,
+                "head_circumference_cm": r.head_circumference_cm,
+                "notes": r.notes,
+                "source_filename": r.source_filename,
+            }
+            for r in records
+        ]
+
+
+def _format_growth_records(records: list[dict]) -> str:
+    """Format growth records into a readable string for the LLM."""
+    if not records:
+        return "Belum ada data tumbuh kembang yang tersimpan."
+    lines = [f"Total {len(records)} pengukuran:"]
+    for i, r in enumerate(records, 1):
+        parts = []
+        if r.get("measurement_date"):
+            parts.append(f"tanggal={r['measurement_date']}")
+        if r.get("age_months") is not None:
+            parts.append(f"usia={r['age_months']} bulan")
+        if r.get("weight_kg") is not None:
+            parts.append(f"BB={r['weight_kg']} kg")
+        if r.get("height_cm") is not None:
+            parts.append(f"TB={r['height_cm']} cm")
+        if r.get("head_circumference_cm") is not None:
+            parts.append(f"LK={r['head_circumference_cm']} cm")
+        if r.get("notes"):
+            parts.append(f"catatan={r['notes']}")
+        lines.append(f"  {i}. {', '.join(parts)}")
+    return "\n".join(lines)
 
 
 def should_retrieve_guidelines(message: str) -> bool:
@@ -262,6 +343,7 @@ async def stream_chat_response(
     child_context: dict | None = None,
     tool_audit_callback: Callable[[dict], None] | None = None,
     session_id: str | None = None,
+    skip_growth_injection: bool = False,
 ) -> AsyncGenerator[str, None]:
     with propagate_attributes(session_id=session_id):
         async_client = get_async_client()
@@ -462,6 +544,31 @@ async def stream_chat_response(
                     "User bertanya tentang vaksin, tetapi tanggal lahir anak belum tersedia. "
                     "Minta tanggal lahir anak sebelum menghitung jadwal vaksin personal."
                 )
+
+        # --- GROWTH DATA INJECTION ---
+        # Always inject saved growth records when they exist for this session,
+        # so the LLM can reference them regardless of what the user asks.
+        # Skip only during the upload-pdf flow where the data is already inline.
+        if session_id and not skip_growth_injection:
+            try:
+                growth_records = get_growth_records_for_session(session_id)
+                if growth_records:
+                    print(
+                        f"📊 Injecting {len(growth_records)} growth record(s) into context"
+                    )
+                    base_prompt += (
+                        "\n\n📊 DATA TUMBUH KEMBANG ANAK (dari PDF yang pernah diupload sebelumnya):\n"
+                        f"{_format_growth_records(growth_records)}\n\n"
+                        "Data di atas adalah riwayat pengukuran tumbuh kembang anak yang sudah "
+                        "tersimpan dari dokumen yang pernah diupload. "
+                        "SELALU gunakan data ini sebagai referensi utama ketika user bertanya "
+                        "tentang kondisi, pertumbuhan, berat badan, tinggi badan, atau "
+                        "perkembangan anak mereka. "
+                        "Bandingkan dengan standar WHO jika relevan dan berikan insight "
+                        "apakah pertumbuhan anak sesuai atau perlu perhatian."
+                    )
+            except Exception as growth_err:
+                print(f"⚠️ Growth data injection error: {growth_err}")
 
         # --- URL VERIFICATION (pre-retrieval) ---
         if should_verify_url(user_message):
