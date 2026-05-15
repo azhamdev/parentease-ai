@@ -137,7 +137,8 @@ def _unique_sources(sources: list[dict]) -> list[dict]:
 
 def _format_vaccine_schedule_result(result) -> str:
     def item_lines(title: str, items: list) -> list[str]:
-        if not items: return [f"{title}: tidak ada."]
+        if not items:
+            return [f"{title}: tidak ada."]
         lines = [f"{title}:"]
         for item in items:
             lines.append(f"- {item.label} ({item.due_age_label})")
@@ -424,13 +425,14 @@ async def stream_chat_response(
              
             for tc in tool_calls_buffer:
                 try:
-                    args = json.loads(tc[ "function "][ "arguments "])
-                    tool_name = tc[ "function "][ "name "]
+                    function_call = tc["function"]
+                    args = json.loads(function_call["arguments"])
+                    tool_name = function_call["name"]
                     print(f"🔍 Tool Requested: {tool_name} with args: {args} ")
                     
                     # ✅ MCP INTEGRATION LOGIC
                     if tool_name == "calculate_vaccine_schedule":
-                        print(f"🔌 Routing to MCP Server...")
+                        print("🔌 Routing to MCP Server...")
                         try:
                             mcp_result = await call_mcp_tool(tool_name, args)
                             # Convert MCP result (dict) to JSON string for LLM
@@ -456,11 +458,11 @@ async def stream_chat_response(
                     messages.append(
                         cast(
                             ChatCompletionMessageParam,
-                             {
-                                 "role ":  "tool ",
-                                 "tool_call_id ": tc[ "id "],
-                                 "name ": tool_name,
-                                 "content ": res,
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": tool_name,
+                                "content": res,
                             },
                         )
                     )
@@ -468,15 +470,18 @@ async def stream_chat_response(
                     print(f"❌ Tool execution error: {tool_err} ")
                     import traceback
                     traceback.print_exc()
+                    fallback_tool_name = "unknown"
+                    if isinstance(tc.get("function"), dict):
+                        fallback_tool_name = tc["function"].get("name") or fallback_tool_name
                     messages.append(
                         cast(
                             ChatCompletionMessageParam,
                             {
-                                 "role ":  "tool ",
-                                 "tool_call_id ": tc[ "id "],
-                                 "name ": tool_name,
-                                 "content ": (
-                                     "Maaf, tidak dapat mengakses informasi medis saat ini. "
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": fallback_tool_name,
+                                "content": (
+                                    "Maaf, tidak dapat mengakses informasi medis saat ini. "
                                 ),
                             },
                         )
