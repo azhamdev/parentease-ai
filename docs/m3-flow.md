@@ -44,7 +44,7 @@ Chat auto vaccine tool   : tersedia
 Basic red flag handler   : tersedia
 RAG Chroma static PDFs   : tersedia lokal setelah ingest
 Tool call audit table    : tersedia untuk tracking pemanggilan tool
-MCP server               : tersedia minimal untuk calculate_vaccine_schedule
+MCP server               : tersedia untuk calculate_vaccine_schedule dan detect_red_flags
 Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
 Growth/z-score valid WHO : belum dibuat
 PDF upload               : belum dibuat
@@ -375,9 +375,10 @@ Tool yang diekspos:
 
 ```text
 calculate_vaccine_schedule
+detect_red_flags
 ```
 
-MCP input schema sama dengan API tools endpoint. M1 hanya perlu tahu nama tool, input schema, dan response schema.
+MCP input schema mengikuti schema masing-masing tool. M1 hanya perlu tahu nama tool, input schema, dan response schema.
 
 Flow:
 
@@ -388,9 +389,17 @@ M1 agent detects vaccine intent
   -> if missing input, return needs_more_input
   -> if valid, return vaccine schedule result
   -> M1 turns structured result into user-facing answer
+
+M1 agent receives urgent medical text
+  -> M1 calls MCP tool detect_red_flags
+  -> M3 tool validates message + child_context
+  -> if red flag found, return reasons, urgent action, and red_flag_rule source
+  -> M1 prioritizes urgent safety answer before general RAG answer
 ```
 
-Fallback kalau MCP belum siap:
+Untuk quick action seperti `Jadwal vaksinasi bayi`, frontend tetap mengirim chat biasa ke `/api/v1/chat`. Backend agent mendeteksi intent vaksin, mengambil `ChildProfile` dan `VaccineRecord`, lalu memanggil MCP tool `calculate_vaccine_schedule` ke `MCP_SERVER_URL`. Jika MCP server mati, chat mengembalikan degraded response dan `toolcall` dicatat dengan status `error`, bukan fallback direct function.
+
+Fallback lama kalau MCP belum siap:
 
 ```text
 M1 calls internal Python function or HTTP endpoint
@@ -473,7 +482,7 @@ Sebaiknya menunggu foundation:
 - Model database lama masih sangat tipis dan belum punya `session_id`.
 - Belum ada PostgreSQL config.
 - Belum ada Alembic.
-- Belum ada source resmi jadwal vaksin di repo.
+- Jadwal vaksin sudah ada sebagai data JSON lokal; tetap perlu review berkala bila guideline resmi berubah.
 - MCP belum jelas akan memakai transport apa: stdio, SSE, atau HTTP JSON-RPC.
 - Kalau M3 langsung refactor `main.py` dan `models.py`, besar kemungkinan konflik dengan M1/M2.
 
@@ -720,9 +729,9 @@ M3 menyediakan fondasi backend yang membuat chat parenting bisa memakai data ter
 ```text
 child profile
   -> chat context
-  -> red flag guardrail
+  -> MCP red flag guardrail
   -> Chroma guideline retrieval
-  -> deterministic vaccine schedule
+  -> MCP deterministic vaccine schedule
   -> response streaming + sources
 ```
 
@@ -731,16 +740,16 @@ Scope MVP M3 yang sudah dikerjakan:
 - Tool deterministic `calculate_vaccine_schedule()`.
 - Endpoint tool `/api/v1/tools/vaccine-schedule`.
 - Endpoint riwayat vaksin per profile.
-- Integrasi chat agar pertanyaan vaksin otomatis memakai tool.
+- Integrasi chat agar pertanyaan vaksin otomatis memakai MCP tool.
 - Pre-retrieve Chroma untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
-- Basic medical red flag handler.
+- Basic medical red flag handler via MCP tool.
 - Date/number normalization untuk form frontend lokal Indonesia.
-- MCP server minimal untuk expose `calculate_vaccine_schedule`.
+- MCP server untuk expose `calculate_vaccine_schedule` dan `detect_red_flags`.
 
 Scope yang sengaja belum menjadi MVP:
 
 - Redis/Celery worker untuk flow upload/chat aktif.
-- MCP server tool tambahan selain `calculate_vaccine_schedule`.
+- MCP server untuk tool RAG tambahan seperti `search_medical_guidelines`.
 - Growth chart/z-score valid WHO.
 - Intent classifier berbasis model khusus.
 
@@ -896,7 +905,7 @@ purpose    : proof file PDF mana yang sudah masuk Chroma lokal
 RAG source rule:
 
 - PDF dipakai untuk jawaban edukasi umum seperti ASI, MPASI, posisi menyusui, dan guideline KIA.
-- Vaccine schedule tidak dihitung dari Chroma setiap request. Jadwal vaksin dibuat deterministic dari tabel terstruktur di `app/tools/vaccine_schedule.py`.
+- Vaccine schedule tidak dihitung dari Chroma setiap request. Jadwal vaksin dibuat deterministic dari data terstruktur di `app/tools/data/vaccine_schedule_id.json`, lalu logic di `app/tools/vaccine_schedule.py` membaca data tersebut.
 - Response frontend menerima marker `[SOURCES]` untuk menampilkan dokumen sumber.
 
 ### Database Model MVP
@@ -1180,14 +1189,72 @@ Flow di `stream_chat_response()`:
 ```text
 build base prompt
   -> inject child profile if available
-  -> detect red flag
-  -> if red flag: return urgent safety response
+  -> call MCP detect_red_flags
+  -> if red flag: return urgent safety response and stop
   -> if medical keyword: pre-retrieve Chroma
-  -> if vaccine keyword + birth_date: calculate vaccine schedule
+  -> if vaccine keyword + birth_date: call MCP calculate_vaccine_schedule
+  -> if vaccine keyword without birth_date: answer general RAG info and ask user to update child data
   -> call LLM streaming
   -> if LLM function-call search_medical_guidelines: execute it
   -> append [SOURCES]
   -> save assistant ChatMessage
+```
+
+### RAG dan Tool Flow
+
+RAG adalah flow untuk mengambil knowledge dari dokumen, bukan untuk menghitung logic personal.
+
+```text
+PDF KIA / ASI guideline
+  -> ingest ke Chroma
+  -> dipotong menjadi chunks
+  -> query user dicocokkan ke chunks
+  -> chunk relevan dimasukkan ke prompt LLM
+  -> LLM menyusun jawaban dengan source
+```
+
+Perbedaan tanggung jawab:
+
+```text
+RAG
+  -> informasi umum dari PDF
+  -> contoh: MPASI, posisi menyusui, penjelasan imunisasi
+
+MCP tools
+  -> logic deterministic / personal
+  -> detect_red_flags: cek tanda bahaya dari pesan user
+  -> calculate_vaccine_schedule: hitung jadwal vaksin dari birth_date + riwayat vaksin
+
+LLM
+  -> merangkai jawaban yang mudah dipahami user
+  -> memakai konteks RAG dan hasil MCP tool
+```
+
+Contoh alur:
+
+```text
+Kapan mulai MPASI?
+  -> MCP detect_red_flags: false
+  -> RAG: yes
+  -> vaccine MCP: no
+  -> LLM jawab dari konteks PDF
+
+Jadwal vaksinasi bayi, belum ada tanggal lahir
+  -> MCP detect_red_flags: false
+  -> RAG: yes
+  -> vaccine MCP: no
+  -> LLM jawab informasi umum dari RAG dan minta user isi tanggal lahir
+
+Jadwal vaksinasi bayi, sudah ada tanggal lahir
+  -> MCP detect_red_flags: false
+  -> RAG: yes
+  -> vaccine MCP: yes
+  -> LLM jawab jadwal personal dengan penjelasan umum dari RAG
+
+Bayi saya demam 39 usia 2 bulan
+  -> MCP detect_red_flags: true
+  -> return urgent safety response
+  -> stop, tidak lanjut RAG/LLM biasa
 ```
 
 Log yang diharapkan:
@@ -1195,7 +1262,7 @@ Log yang diharapkan:
 ```text
 ChromaDB has 434 documents
 Pre-retrieved 3 source(s)
-Calculated vaccine schedule from child profile
+Calculated vaccine schedule via MCP
 No tool calls detected - direct response
 Sending ... pre-retrieved source(s) to frontend
 ```
@@ -1225,7 +1292,7 @@ demam pada bayi di bawah 3 bulan
 suhu >= 40 C
 ```
 
-Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa.
+Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa. Deteksi di chat sekarang memanggil MCP tool `detect_red_flags`, sehingga `make mcp` perlu berjalan untuk guardrail penuh. Jika MCP red flag gagal, chat mengembalikan degraded safety response dan mencatat `toolcall` status `error`.
 
 ### Frontend Contract
 

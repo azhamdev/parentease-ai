@@ -67,6 +67,8 @@ Run MCP tool server in another terminal:
 make mcp
 ```
 
+`make mcp` is required for MCP-backed tools such as red flag detection and the personalized vaccine schedule in chat.
+
 Run frontend in another terminal:
 
 ```bash
@@ -83,6 +85,9 @@ uv run alembic current
 docker compose exec -T redis redis-cli ping
 uv run celery -A app.core.celery_app.celery_app report
 curl http://localhost:8001/health
+curl -s -X POST http://localhost:8001/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}'
 ```
 
 Start PostgreSQL + Redis and run migration:
@@ -113,6 +118,13 @@ MCP tool server runs at:
 
 ```text
 http://127.0.0.1:8001
+```
+
+MCP tools currently exposed:
+
+```text
+calculate_vaccine_schedule
+detect_red_flags
 ```
 
 ## Database
