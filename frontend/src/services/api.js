@@ -1,5 +1,5 @@
 
-const API_URL = "http://localhost:8000/api/v1";
+const API_URL = "http://34.50.87.37:8080/api/v1";
 
 const normalizeDate = (value) => {
   if (!value) return value;
