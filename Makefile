@@ -1,4 +1,4 @@
-.PHONY: db redis services migrate api api-server dev dev-async mcp frontend worker celery-health
+.PHONY: db redis services migrate api api-server dev dev-async mcp frontend worker celery-health docker-build docker-up docker-down docker-logs
 
 db:
 	docker compose up -d postgres
@@ -43,3 +43,15 @@ worker: redis
 
 celery-health: redis
 	uv run celery -A app.core.celery_app.celery_app call health.ping
+
+docker-build:
+	docker compose -f docker-compose.prod.yml build
+
+docker-up:
+	docker compose -f docker-compose.prod.yml up -d
+
+docker-down:
+	docker compose -f docker-compose.prod.yml down
+
+docker-logs:
+	docker compose -f docker-compose.prod.yml logs -f

@@ -224,3 +224,72 @@ Synthetic upload test PDF:
 test_assets/sample_kia_growth_filled.pdf
 test_assets/sample_buku_kia_filled_pages.pdf
 ```
+
+## Docker Deploy Draft
+
+The repo includes Docker files for a VPS/staging deployment:
+
+```text
+Dockerfile                  # backend image for API, MCP, and Celery worker
+frontend/Dockerfile         # React build served by Nginx
+frontend/nginx.conf         # SPA fallback config
+deploy/nginx/default.conf   # one-VM public gateway/reverse proxy
+docker-compose.prod.yml     # Nginx + API + MCP + worker + frontend + PostgreSQL + Redis
+```
+
+For a local Docker staging run:
+
+```bash
+cp .env.example .env
+# fill API keys
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+Or use the Makefile shortcuts:
+
+```bash
+make docker-build
+make docker-up
+make docker-logs
+make docker-down
+```
+
+Default local Docker URLs:
+
+```text
+Public app  : http://localhost
+Backend API : http://localhost/api/v1
+MCP health  : http://localhost/mcp/health
+```
+
+In Docker production mode, only the `nginx` service exposes a public port.
+The API, MCP server, worker, PostgreSQL, Redis, and frontend containers stay on
+the internal Docker network. This is the intended one-VM topology.
+
+For one VM behind Cloudflare, point your domain A record to the VM public IP and
+keep the frontend API URL same-origin:
+
+```env
+VITE_API_URL=/api/v1
+HTTP_PORT=80
+```
+
+If you later split frontend/API into different domains, set `VITE_API_URL` to
+the full backend URL before building the frontend image, for example
+`https://api.your-domain.com/api/v1`.
+
+Persistent Docker volumes used by the production compose:
+
+```text
+postgres_data
+redis_data
+chroma_data
+uploads_data
+```
+
+After first deploy, ingest local knowledge PDFs into the running API container if
+the `chroma_data` volume is empty:
+
+```bash
+docker compose -f docker-compose.prod.yml exec api uv run -m scripts.ingest_pdfs
+```
