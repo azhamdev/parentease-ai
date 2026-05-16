@@ -68,8 +68,6 @@ services:
     restart: unless-stopped
     command:
       [
-        'uv',
-        'run',
         'uvicorn',
         'app.mcp_server:app',
         '--host',
