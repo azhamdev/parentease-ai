@@ -71,7 +71,7 @@ uv run alembic current
 Expected:
 
 ```text
-20260513_0003 (head)
+20260515_0004 (head)
 ```
 
 Proof via `psql`:
@@ -94,6 +94,7 @@ alembic_version
 chatmessage
 childprofile
 document
+growthrecord
 toolcall
 vaccinerecord
 ```
@@ -174,16 +175,18 @@ asi_guidelines.pdf | completed | pediatric_guidelines | 50
 buku_kia_2024.pdf  | completed | pediatric_guidelines | 384
 ```
 
-## 4. Start Backend
+## 4. Start Local Stack
 
 ```bash
 make dev
 ```
 
-Backend:
+Expected services:
 
 ```text
-http://127.0.0.1:8000
+Backend API : http://127.0.0.1:8000
+MCP Server  : http://127.0.0.1:8001
+React UI    : http://localhost:5173
 ```
 
 API docs:
@@ -192,17 +195,17 @@ API docs:
 http://127.0.0.1:8000/scalar
 ```
 
-Start frontend in another terminal:
+MCP health proof:
 
 ```bash
-cd frontend
-npm run dev
+curl http://127.0.0.1:8001/health
 ```
 
-Frontend:
+Expected:
 
 ```text
-http://localhost:5173
+status = ok
+tools contains calculate_vaccine_schedule, detect_red_flags, search_medical_guidelines, verify_url_source
 ```
 
 ## UI Proof Flow
@@ -302,6 +305,7 @@ Response type: text/event-stream
 Backend terminal expected:
 
 ```text
+Intent scores: medical=...
 ChromaDB has 434 documents
 Pre-retrieved ... source(s)
 No tool calls detected - direct response
@@ -335,7 +339,7 @@ assistant | ...
 Interpretasi:
 
 ```text
-Kalau backend log menunjukkan Pre-retrieved ... source(s), berarti RAG/Chroma dipakai.
+Kalau backend log menunjukkan Intent scores + Pre-retrieved ... source(s), berarti intent classifier mendeteksi medical/RAG dan Chroma dipakai.
 Kalau UI menampilkan sources, berarti marker [SOURCES] berhasil diparse frontend.
 ```
 
@@ -344,7 +348,7 @@ Kalau UI menampilkan sources, berarti marker [SOURCES] berhasil diparse frontend
 From the chat UI, ask:
 
 ```text
-Jadwal vaksinasi bayi saya apa?
+Anak saya perlu suntikan bulan ini apa?
 ```
 
 Network tab expected:
@@ -358,9 +362,10 @@ Request header: X-Session-ID: {session_id}
 Backend terminal expected:
 
 ```text
+Intent scores: medical=..., vaccine=...
 ChromaDB has 434 documents
 Pre-retrieved ... source(s)
-Calculated vaccine schedule from child profile
+Calculated vaccine schedule via MCP
 No tool calls detected - direct response
 ```
 
@@ -376,7 +381,7 @@ Sumber Buku Kesehatan Ibu dan Anak 2024 muncul.
 Proof:
 
 ```text
-Kalau log "Calculated vaccine schedule from child profile" muncul, berarti chat otomatis memakai vaccine tool.
+Kalau log "Calculated vaccine schedule via MCP" muncul, berarti chat otomatis memakai MCP vaccine tool.
 Kalau tidak muncul, cek apakah X-Session-ID terkirim dan child profile punya birth_date.
 ```
 
@@ -405,6 +410,20 @@ input_payload.birth_date terisi
 sources berisi Buku Kesehatan Ibu dan Anak 2024
 ```
 
+Intent classifier proof:
+
+```text
+Kalimat eksplisit:
+  "Jadwal vaksinasi bayi saya apa?"
+
+Kalimat implisit:
+  "Anak saya perlu suntikan bulan ini apa?"
+  "Anakku perlu yang tetes kapan?"
+  "Suntikan bulan ini apa?"
+
+Semua harus menghasilkan log vaccine score tinggi dan route ke calculate_vaccine_schedule.
+```
+
 ### UI Step 4: Red Flag Question
 
 From the chat UI, ask:
@@ -417,7 +436,7 @@ Backend terminal expected:
 
 ```text
 Tidak perlu menunggu RAG/LLM biasa.
-Response langsung safety-first dari red flag detector.
+Response langsung safety-first dari MCP detect_red_flags.
 ```
 
 UI expected:
@@ -440,6 +459,22 @@ Expected:
 
 ```text
 assistant response berisi arahan fasilitas kesehatan/IGD.
+```
+
+Tambahan red flag yang perlu ikut dites manual:
+
+```text
+Bayi saya sesak dan dada tertarik
+Anak saya kejang
+Bayi saya muntah hijau
+Anak saya tidak pipis dan mulutnya kering
+Bayi 4 bulan demam 39
+```
+
+Expected:
+
+```text
+Chat berhenti di safety response, tidak lanjut ke RAG/LLM biasa.
 ```
 
 ### UI Step 5: Edit Profile
@@ -492,7 +527,7 @@ Jika source kosong:
 ```text
 1. Cek backend log: apakah ada "Pre-retrieved ... source(s)"?
 2. Cek Chroma: apakah "ChromaDB has 434 documents" muncul?
-3. Cek pertanyaan mengandung keyword medis/parenting seperti ASI, MPASI, vaksin, bayi.
+3. Cek backend log "Intent scores"; medical/vaccine/growth harus melewati threshold.
 4. Cek frontend Network response: apakah ada marker [SOURCES]?
 ```
 
@@ -502,7 +537,18 @@ Jika vaccine tool tidak terpanggil:
 1. Cek request chat punya header X-Session-ID.
 2. Cek table childprofile punya row untuk session_id itu.
 3. Cek birth_date tidak null.
-4. Cek backend log: harus ada "Calculated vaccine schedule from child profile".
+4. Cek backend log: harus ada "Intent scores" dengan vaccine score tinggi.
+5. Cek backend log: harus ada "Calculated vaccine schedule via MCP".
+6. Cek MCP server hidup di http://127.0.0.1:8001/health.
+```
+
+Jika MCP error:
+
+```text
+1. Cek make dev menjalankan uvicorn app.mcp_server:app --port 8001.
+2. Cek /health status ok.
+3. Cek toolcall table: output_payload.error harus berbentuk structured error, bukan string mentah.
+4. Cek field error.type, error.retryable, error.tool_name.
 ```
 
 Jika data tidak muncul saat balik ke app:
@@ -662,6 +708,7 @@ curl -N -X POST http://127.0.0.1:8000/api/v1/chat/ \
 Expected backend log:
 
 ```text
+Intent scores: medical=...
 ChromaDB has 434 documents
 Pre-retrieved ... source(s)
 No tool calls detected - direct response
@@ -704,7 +751,8 @@ curl -N -X POST http://127.0.0.1:8000/api/v1/chat/ \
 Expected backend log:
 
 ```text
-Calculated vaccine schedule from child profile
+Intent scores: medical=..., vaccine=...
+Calculated vaccine schedule via MCP
 ```
 
 Expected answer:
@@ -737,18 +785,61 @@ Ada tanda bahaya.
 Segera bawa anak ke IGD atau fasilitas kesehatan terdekat.
 ```
 
-## 12. Automated Verification
+## 12. Scenario H: Intent Classifier Spot Check
 
-Run backend tests:
+Run:
 
 ```bash
-.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py tests/test_red_flags.py
+.venv/bin/python - <<'PY'
+from app.services.agent.intent_classifier import classify_intent
+
+samples = [
+    "Anak saya perlu suntikan bulan ini apa?",
+    "Anakku perlu yang tetes kapan?",
+    "Kapan mulai MPASI?",
+    "Posisi menyusui yang benar",
+    "Berat anak saya normal nggak?",
+    "Anak saya suka main bola",
+    "Apa itu JavaScript?",
+]
+
+for sample in samples:
+    result = classify_intent(sample)
+    print(sample)
+    print({
+        "guidelines": result.needs_guidelines,
+        "vaccine": result.needs_vaccine_schedule,
+        "growth": result.needs_growth_context,
+        "scores": {
+            "medical": result.medical.score,
+            "vaccine": result.vaccine.score,
+            "growth": result.growth.score,
+        },
+    })
+PY
 ```
 
 Expected:
 
 ```text
-Ran 14 tests
+Suntikan/tetes/vaksin implicit question -> vaccine = True
+MPASI/menyusui -> guidelines = True
+Berat normal -> guidelines = True, growth = True
+Main bola / JavaScript -> all false
+```
+
+## 13. Automated Verification
+
+Run backend tests:
+
+```bash
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
+```
+
+Expected:
+
+```text
+Ran 39 tests
 OK
 ```
 
@@ -761,10 +852,10 @@ uv run alembic current
 Expected:
 
 ```text
-20260512_0001 (head)
+20260515_0004 (head)
 ```
 
-## 13. Cleanup After Testing
+## 14. Cleanup After Testing
 
 Stop services without deleting data:
 

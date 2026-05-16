@@ -416,6 +416,31 @@ M1 agent receives a URL
 
 Untuk quick action seperti `Jadwal vaksinasi bayi`, frontend tetap mengirim chat biasa ke `/api/v1/chat`. Backend agent mendeteksi intent vaksin, mengambil `ChildProfile` dan `VaccineRecord`, lalu memanggil MCP tool `calculate_vaccine_schedule` ke `MCP_SERVER_URL`. Jika MCP server mati, chat mengembalikan degraded response dan `toolcall` dicatat dengan status `error`, bukan fallback direct function.
 
+MCP hardening yang sudah diterapkan:
+
+```text
+/health
+  -> returns status, service name, and exposed tool names
+
+JSON-RPC validation error
+  -> error.code = -32602
+  -> error.data.type = validation_error / invalid_params
+  -> error.data.tool_name when available
+  -> error.data.retryable = false
+
+JSON-RPC tool execution error
+  -> error.code = -32603
+  -> error.data.type = tool_execution_error
+  -> error.data.tool_name
+  -> error.data.retryable = true/false depending on tool
+  -> error.data.details contains safe error details
+
+MCP client
+  -> raises MCPClientError with type, tool_name, retryable, and details
+  -> handles connection error, timeout, invalid JSON, and JSON-RPC error
+  -> agent audit stores structured error payload instead of plain string
+```
+
 Fallback lama kalau MCP belum siap:
 
 ```text
@@ -719,13 +744,13 @@ tests/test_tools_endpoint.py
 - Test yang sudah diverifikasi:
 
 ```bash
-.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py tests/test_red_flags.py
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
 ```
 
 - Hasil terakhir:
 
 ```text
-Ran 14 tests
+Ran 39 tests
 OK
 ```
 
@@ -1231,9 +1256,9 @@ build base prompt
   -> inject child profile if available
   -> call MCP detect_red_flags
   -> if red flag: return urgent safety response and stop
-  -> if medical keyword: call MCP search_medical_guidelines
-  -> if vaccine keyword + birth_date: call MCP calculate_vaccine_schedule
-  -> if vaccine keyword without birth_date: answer general RAG info and ask user to update child data
+  -> if medical intent keyword/pattern: call MCP search_medical_guidelines
+  -> if vaccine intent keyword/pattern + birth_date: call MCP calculate_vaccine_schedule
+  -> if vaccine intent keyword/pattern without birth_date: answer general RAG info and ask user to update child data
   -> call LLM streaming
   -> if LLM function-call search_medical_guidelines: execute via MCP
   -> append [SOURCES]
@@ -1311,6 +1336,87 @@ Sending ... pre-retrieved source(s) to frontend
 
 Catatan: `No tool calls detected` hanya berarti LLM tidak memanggil function tool tambahan. Chroma tetap bisa sudah dipakai lewat pre-retrieve.
 
+### Intent Detection Spec
+
+Intent detection sekarang dipisah ke modul khusus:
+
+```text
+app/services/agent/intent_classifier.py
+```
+
+Classifier masih lokal/deterministik agar cepat, murah, dan mudah dites, tetapi sudah lebih pintar daripada keyword tunggal. Chat sekarang memakai kombinasi:
+
+```text
+weighted keyword scoring
+  -> istilah kuat seperti mpasi, asi, vaksin, imunisasi, bcg, polio, z-score
+  -> istilah konteks seperti bayi/anak hanya menambah skor kecil, tidak cukup sendiri
+
+regex/pattern intent
+  -> "Anak saya perlu suntikan bulan ini apa?"
+  -> "Polio tetes berikutnya kapan?"
+  -> "Umur berapa bayi boleh makan?"
+  -> "Posisi menyusui yang benar gimana?"
+
+reason tracking
+  -> hasil classifier menyimpan score + alasan seperti term:suntikan, pattern:vaccine-timing
+```
+
+Runtime behavior:
+
+```text
+stream_chat_response()
+  -> classify_intent(user_message) sekali di awal request
+  -> log score medical/vaccine/growth + reason ringkas
+  -> gunakan classification.needs_guidelines untuk pre-retrieve RAG
+  -> gunakan classification.needs_vaccine_schedule untuk vaccine tool
+  -> growth score ikut menaikkan kebutuhan guideline context
+```
+
+Contoh route yang sudah ditutup test:
+
+```text
+"Anak saya perlu suntikan bulan ini apa?"
+  -> vaccine intent true
+  -> guideline intent true
+  -> call MCP calculate_vaccine_schedule jika birth_date tersedia
+
+"Anakku perlu yang tetes kapan?"
+  -> vaccine intent true
+  -> call MCP calculate_vaccine_schedule jika birth_date tersedia
+
+"Kapan mulai MPASI?"
+  -> guideline intent true
+  -> call MCP search_medical_guidelines
+
+"Anak saya suka main bola"
+  -> tidak memicu medical/vaccine/growth tool
+
+"Apa itu JavaScript?"
+  -> tidak memicu medical/vaccine/growth tool
+```
+
+Mapping:
+
+```text
+medical/RAG intent
+  -> should_retrieve_guidelines()
+  -> classification.needs_guidelines
+  -> MCP search_medical_guidelines
+
+vaccine intent
+  -> should_calculate_vaccine_schedule()
+  -> classification.needs_vaccine_schedule
+  -> MCP calculate_vaccine_schedule jika birth_date tersedia
+  -> jawaban umum + minta update data anak jika birth_date belum tersedia
+
+growth context intent
+  -> should_include_growth_data()
+  -> classification.needs_growth_context
+  -> inject growth records dari DB jika tersedia
+```
+
+Catatan: ini belum LLM/model-based intent classifier. Kalau nanti user phrasing makin luas, bisa dinaikkan ke classifier LLM kecil atau intent router khusus.
+
 ### Red Flag Guardrail Spec
 
 File:
@@ -1322,16 +1428,22 @@ app/tools/red_flags.py
 Deteksi tanda bahaya MVP:
 
 ```text
-kejang
+kejang / step
 sesak / sulit napas / napas cepat
+tarikan dinding dada / dada tertarik / cuping hidung
 bibir biru / kebiruan
-tidak mau minum / tidak mau menyusu
-dehidrasi
-lemas sekali
-tidak sadar
+tidak mau minum / tidak mau menyusu / menolak minum/menyusu
+dehidrasi / tidak pipis / jarang pipis / pipis sedikit
+mulut kering / mata cekung / ubun-ubun cekung
+lemas sekali / sangat lemas / sulit dibangunkan
+tidak sadar / linglung
 muntah terus
+muntah hijau / muntah darah
+BAB darah
 demam pada bayi di bawah 3 bulan
+demam >= 39 C pada bayi di bawah 6 bulan
 suhu >= 40 C
+demam + kaku leher/kuduk atau ruam ungu
 ```
 
 Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa. Deteksi di chat sekarang memanggil MCP tool `detect_red_flags`, sehingga `make mcp` perlu berjalan untuk guardrail penuh. Jika MCP red flag gagal, chat mengembalikan degraded safety response dan mencatat `toolcall` status `error`.
@@ -1352,7 +1464,7 @@ Endpoint tool tetap tersedia untuk debug/admin/test manual.
 Backend tests:
 
 ```bash
-.venv/bin/python -m unittest tests/test_vaccine_schedule.py tests/test_tools_endpoint.py tests/test_red_flags.py
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
 ```
 
 Type check spot check:
@@ -1395,7 +1507,7 @@ Yang masih perlu diselesaikan setelah MVP:
 - MCP server tool tambahan dan hardening auth/rate limit.
 - Redis/Celery kalau ingestion/upload dibuat async.
 - Z-score/growth chart berbasis WHO, bukan placeholder.
-- Intent classifier yang lebih robust daripada keyword.
+- Intent classifier LLM/model-based jika rule scoring lokal sudah tidak cukup.
 - Pemisahan source type:
   - guideline edukasi dari RAG,
   - source rule jadwal vaksin,

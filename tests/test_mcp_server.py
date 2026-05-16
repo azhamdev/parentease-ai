@@ -16,6 +16,7 @@ class McpServerTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
+        self.assertIn("calculate_vaccine_schedule", response.json()["tools"])
 
     def test_tools_list(self):
         response = self.client.post(
@@ -91,7 +92,11 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32601)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32601)
+        self.assertEqual(error["data"]["type"], "tool_not_found")
+        self.assertEqual(error["data"]["tool_name"], "unknown_tool")
+        self.assertFalse(error["data"]["retryable"])
 
     def test_unknown_method_returns_jsonrpc_error(self):
         response = self.client.post(
@@ -100,7 +105,9 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32601)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32601)
+        self.assertEqual(error["data"]["type"], "method_not_found")
 
     def test_invalid_tool_arguments_return_jsonrpc_error(self):
         response = self.client.post(
@@ -117,7 +124,10 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "validation_error")
+        self.assertEqual(error["data"]["tool_name"], "calculate_vaccine_schedule")
 
     def test_missing_tool_name_returns_jsonrpc_error(self):
         response = self.client.post(
@@ -131,7 +141,9 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "invalid_params")
 
     def test_detect_red_flags_tool_call(self):
         response = self.client.post(
@@ -173,7 +185,10 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "validation_error")
+        self.assertEqual(error["data"]["tool_name"], "detect_red_flags")
 
     def test_search_medical_guidelines_tool_call(self):
         with patch(
@@ -222,7 +237,10 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "validation_error")
+        self.assertEqual(error["data"]["tool_name"], "search_medical_guidelines")
 
     @patch.dict("os.environ", {"TAVILY_API_KEY": ""})
     def test_verify_url_source_tool_call_without_api_key_returns_no_match(self):
@@ -257,7 +275,10 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "validation_error")
+        self.assertEqual(error["data"]["tool_name"], "verify_url_source")
 
     def test_verify_url_source_rejects_non_http_url(self):
         response = self.client.post(
@@ -274,7 +295,35 @@ class McpServerTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"]["code"], -32602)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32602)
+        self.assertEqual(error["data"]["type"], "validation_error")
+        self.assertEqual(error["data"]["tool_name"], "verify_url_source")
+
+    def test_tool_execution_error_is_structured(self):
+        with patch(
+            "app.mcp_server.search_medical_guidelines",
+            side_effect=RuntimeError("chroma unavailable"),
+        ):
+            response = self.client.post(
+                "/rpc",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "15",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_medical_guidelines",
+                        "arguments": {"query": "mpasi"},
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32603)
+        self.assertEqual(error["data"]["type"], "tool_execution_error")
+        self.assertEqual(error["data"]["tool_name"], "search_medical_guidelines")
+        self.assertTrue(error["data"]["retryable"])
 
 
 if __name__ == "__main__":

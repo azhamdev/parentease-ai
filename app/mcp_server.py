@@ -17,6 +17,7 @@ app = FastAPI(title="ParentEase MCP Tool Server")
 JSONRPC_INVALID_REQUEST = -32600
 JSONRPC_METHOD_NOT_FOUND = -32601
 JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
 
 
 class JsonRpcRequest(BaseModel):
@@ -43,9 +44,36 @@ def _jsonrpc_error(
     return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
+def _tool_error_data(
+    *,
+    error_type: str,
+    tool_name: str | None = None,
+    retryable: bool = False,
+    details: Any | None = None,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "type": error_type,
+        "retryable": retryable,
+    }
+    if tool_name:
+        data["tool_name"] = tool_name
+    if details is not None:
+        data["details"] = details
+    return data
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "parentease-mcp-server"}
+    return {
+        "status": "ok",
+        "service": "parentease-mcp-server",
+        "tools": [
+            "calculate_vaccine_schedule",
+            "detect_red_flags",
+            "search_medical_guidelines",
+            "verify_url_source",
+        ],
+    }
 
 
 @app.post("/rpc")
@@ -55,6 +83,7 @@ def rpc(payload: JsonRpcRequest) -> dict:
             payload.id,
             code=JSONRPC_INVALID_REQUEST,
             message="Invalid JSON-RPC version.",
+            data=_tool_error_data(error_type="invalid_request"),
         )
 
     if payload.method == "tools/list":
@@ -77,6 +106,7 @@ def rpc(payload: JsonRpcRequest) -> dict:
         payload.id,
         code=JSONRPC_METHOD_NOT_FOUND,
         message=f"Method '{payload.method}' is not supported.",
+        data=_tool_error_data(error_type="method_not_found"),
     )
 
 
@@ -89,6 +119,7 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
             payload.id,
             code=JSONRPC_INVALID_PARAMS,
             message="Tool name is required.",
+            data=_tool_error_data(error_type="invalid_params"),
         )
 
     if not isinstance(arguments, dict):
@@ -96,6 +127,7 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
             payload.id,
             code=JSONRPC_INVALID_PARAMS,
             message="Tool arguments must be an object.",
+            data=_tool_error_data(error_type="invalid_params", tool_name=tool_name),
         )
 
     if tool_name == "calculate_vaccine_schedule":
@@ -114,6 +146,10 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
         payload.id,
         code=JSONRPC_METHOD_NOT_FOUND,
         message=f"Tool '{tool_name}' is not supported.",
+        data=_tool_error_data(
+            error_type="tool_not_found",
+            tool_name=tool_name,
+        ),
     )
 
 
@@ -131,7 +167,23 @@ def _handle_vaccine_schedule_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Invalid tool arguments.",
-            data=exc.errors(),
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="calculate_vaccine_schedule",
+                details=exc.errors(),
+            ),
+        )
+    except Exception as exc:
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INTERNAL_ERROR,
+            message="Tool execution failed.",
+            data=_tool_error_data(
+                error_type="tool_execution_error",
+                tool_name="calculate_vaccine_schedule",
+                retryable=True,
+                details={"error": str(exc)},
+            ),
         )
 
     return _jsonrpc_result(request_id, result.model_dump(mode="json"))
@@ -149,6 +201,11 @@ def _handle_red_flags_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'message' is required.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="detect_red_flags",
+                details={"field": "message"},
+            ),
         )
 
     if child_context is not None and not isinstance(child_context, dict):
@@ -156,9 +213,27 @@ def _handle_red_flags_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'child_context' must be an object.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="detect_red_flags",
+                details={"field": "child_context"},
+            ),
         )
 
-    result = detect_red_flags(message, child_context)
+    try:
+        result = detect_red_flags(message, child_context)
+    except Exception as exc:
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INTERNAL_ERROR,
+            message="Tool execution failed.",
+            data=_tool_error_data(
+                error_type="tool_execution_error",
+                tool_name="detect_red_flags",
+                retryable=False,
+                details={"error": str(exc)},
+            ),
+        )
     sources = []
     if result.is_red_flag:
         sources.append(
@@ -194,6 +269,11 @@ def _handle_medical_guidelines_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'query' is required.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="search_medical_guidelines",
+                details={"field": "query"},
+            ),
         )
 
     if not isinstance(n_results, int):
@@ -201,9 +281,27 @@ def _handle_medical_guidelines_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'n_results' must be an integer.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="search_medical_guidelines",
+                details={"field": "n_results"},
+            ),
         )
 
-    result = search_medical_guidelines(query=query, n_results=n_results)
+    try:
+        result = search_medical_guidelines(query=query, n_results=n_results)
+    except Exception as exc:
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INTERNAL_ERROR,
+            message="Tool execution failed.",
+            data=_tool_error_data(
+                error_type="tool_execution_error",
+                tool_name="search_medical_guidelines",
+                retryable=True,
+                details={"error": str(exc)},
+            ),
+        )
     return _jsonrpc_result(request_id, result.model_dump())
 
 
@@ -218,6 +316,11 @@ def _handle_verify_url_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'url' is required.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="verify_url_source",
+                details={"field": "url"},
+            ),
         )
 
     if not url.startswith(("http://", "https://")):
@@ -225,9 +328,27 @@ def _handle_verify_url_tool(
             request_id,
             code=JSONRPC_INVALID_PARAMS,
             message="Argument 'url' must start with http:// or https://.",
+            data=_tool_error_data(
+                error_type="validation_error",
+                tool_name="verify_url_source",
+                details={"field": "url"},
+            ),
         )
 
-    result = verify_url_source(url)
+    try:
+        result = verify_url_source(url)
+    except Exception as exc:
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INTERNAL_ERROR,
+            message="Tool execution failed.",
+            data=_tool_error_data(
+                error_type="tool_execution_error",
+                tool_name="verify_url_source",
+                retryable=True,
+                details={"error": str(exc)},
+            ),
+        )
     return _jsonrpc_result(
         request_id,
         {

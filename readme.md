@@ -23,6 +23,7 @@ REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/1
 CELERY_RESULT_BACKEND=redis://localhost:6379/2
 MCP_SERVER_URL=http://localhost:8001
+MCP_TIMEOUT_SECONDS=30
 LANGFUSE_SECRET_KEY=
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_BASE_URL="https://us.cloud.langfuse.com"
@@ -155,7 +156,7 @@ docker compose ps postgres
 Expected Alembic version:
 
 ```text
-20260513_0003 (head)
+20260515_0004 (head)
 ```
 
 `parentease.db` is an old/local SQLite file and is not used when `DATABASE_URL` points to PostgreSQL.

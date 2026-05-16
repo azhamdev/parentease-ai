@@ -6,7 +6,8 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
-from app.services.agent.mcp_client import get_mcp_client
+from app.services.agent.intent_classifier import classify_intent
+from app.services.agent.mcp_client import MCPClientError, get_mcp_client
 from app.tools.verify_url import extract_urls
 
 from app.utils import langfuse_logger
@@ -18,6 +19,16 @@ async def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
     """Memanggil MCP Server M3 lewat MCP client milik M1."""
     client = await get_mcp_client()
     return await client.call_tool(tool_name, arguments)
+
+
+def _structured_error(error: Exception) -> dict:
+    if isinstance(error, MCPClientError):
+        return error.to_dict()
+    return {
+        "type": error.__class__.__name__,
+        "message": str(error),
+        "retryable": False,
+    }
 
 
 # --- OPENAI CLIENTS ---
@@ -89,82 +100,9 @@ TOOLS: list[ChatCompletionToolParam] = [
     },
 ]
 
-GROWTH_KEYWORDS = (
-    "tumbuh",
-    "kembang",
-    "berat",
-    "tinggi",
-    "pertumbuhan",
-    "perkembangan",
-    "kms",
-    "posyandu",
-    "stunting",
-    "gizi",
-    "nutrisi",
-    "z-score",
-    "growth",
-    "berat badan",
-    "tinggi badan",
-    "lingkar kepala",
-    "grafik",
-    "kurva",
-    "pdf",
-    "upload",
-)
-
-MEDICAL_KEYWORDS = (
-    "asi",
-    "mpasi",
-    "makan",
-    "menyusui",
-    "susu",
-    "vaksin",
-    "imunisasi",
-    "bcg",
-    "dpt",
-    "polio",
-    "pcv",
-    "rotavirus",
-    "campak",
-    "rubella",
-    "tumbuh",
-    "kembang",
-    "berat",
-    "tinggi",
-    "demam",
-    "batuk",
-    "diare",
-    "stunting",
-    "posyandu",
-    "bayi",
-    "anak",
-)
-VACCINE_KEYWORDS = (
-    "vaksin",
-    "vaksinasi",
-    "imunisasi",
-    "bcg",
-    "dpt",
-    "polio",
-    "pcv",
-    "rotavirus",
-    "campak",
-    "rubella",
-    "mr",
-    "hb0",
-    "hepatitis",
-)
-
-
 def should_verify_url(message: str) -> bool:
     """Return True when the user message contains at least one URL."""
     return bool(extract_urls(message))
-
-
-def should_include_growth_data(message: str) -> bool:
-    """Return True when the message might benefit from growth record context."""
-    text = message.lower()
-    return any(keyword in text for keyword in GROWTH_KEYWORDS)
 
 
 def get_growth_records_for_session(session_id: str) -> list[dict]:
@@ -217,17 +155,6 @@ def _format_growth_records(records: list[dict]) -> str:
             parts.append(f"catatan={r['notes']}")
         lines.append(f"  {i}. {', '.join(parts)}")
     return "\n".join(lines)
-
-
-def should_retrieve_guidelines(message: str) -> bool:
-    text = message.lower()
-    return any(keyword in text for keyword in MEDICAL_KEYWORDS)
-
-
-@observe()
-def should_calculate_vaccine_schedule(message: str) -> bool:
-    text = message.lower()
-    return any(keyword in text for keyword in VACCINE_KEYWORDS)
 
 
 @observe()
@@ -350,6 +277,20 @@ async def stream_chat_response(
         async_client = get_async_client()
         today = date.today()
         today_str = today.strftime("%d %B %Y")
+        intent = classify_intent(user_message)
+        print(
+            "🧭 Intent scores: "
+            f"medical={intent.medical.score:.1f}, "
+            f"vaccine={intent.vaccine.score:.1f}, "
+            f"growth={intent.growth.score:.1f}, "
+            f"url={intent.has_url}"
+        )
+        print(
+            "🧭 Intent reasons: "
+            f"medical={intent.medical.reasons[:4]}, "
+            f"vaccine={intent.vaccine.reasons[:4]}, "
+            f"growth={intent.growth.reasons[:4]}"
+        )
 
         # Base Prompt Construction
         base_prompt = (
@@ -480,7 +421,7 @@ async def stream_chat_response(
                             "message": user_message,
                             "child_context": child_context or {},
                         },
-                        "output_payload": {"error": str(red_flag_err)},
+                        "output_payload": {"error": _structured_error(red_flag_err)},
                         "sources": [],
                     }
                 )
@@ -505,7 +446,7 @@ async def stream_chat_response(
             return
 
         retrieved_sources: list[dict] = []
-        if should_retrieve_guidelines(user_message):
+        if intent.needs_guidelines:
             try:
                 guideline_result = await call_mcp_tool(
                     "search_medical_guidelines",
@@ -553,12 +494,12 @@ async def stream_chat_response(
                                 "n_results": 3,
                                 "phase": "pre_retrieve",
                             },
-                            "output_payload": {"error": str(retrieve_err)},
+                            "output_payload": {"error": _structured_error(retrieve_err)},
                             "sources": [],
                         }
                     )
 
-        if should_calculate_vaccine_schedule(user_message):
+        if intent.needs_vaccine_schedule:
             vaccine_child_context = child_context or {}
             birth_date = vaccine_child_context.get("birth_date")
             if birth_date:
@@ -620,7 +561,7 @@ async def stream_chat_response(
                                         )
                                     ),
                                 },
-                                "output_payload": {"error": str(vaccine_err)},
+                                "output_payload": {"error": _structured_error(vaccine_err)},
                                 "sources": [],
                             }
                         )
@@ -841,7 +782,13 @@ async def stream_chat_response(
                                 srcs = mcp_result.get("sources", [])
                             except Exception as mcp_err:
                                 print(f"❌ MCP Execution Error: {mcp_err}")
-                                res = f"Error calling tool via MCP: {mcp_err}"
+                                res = json.dumps(
+                                    {
+                                        "status": "error",
+                                        "error": _structured_error(mcp_err),
+                                    },
+                                    ensure_ascii=False,
+                                )
                                 srcs = []
 
                         elif tool_name == "search_medical_guidelines":
