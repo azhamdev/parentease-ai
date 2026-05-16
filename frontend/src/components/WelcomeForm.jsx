@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createSession, updateChildProfile, getChildProfile } from '../services/api';
-import { Baby, Loader2, X } from 'lucide-react';
+import { Baby, Loader2, Venus, Mars, X } from 'lucide-react';
 
 const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewSession }) => {
   const [formData, setFormData] = useState({
@@ -115,17 +115,17 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
   };
 
   return (
-    <div className="h-full bg-bg-secondary flex items-center justify-center p-6 overflow-y-auto">
-      <div className="bg-bg-main w-full max-w-2xl rounded-2xl shadow-md border border-border overflow-hidden relative">
-        <div className="p-6 border-b border-border flex items-center justify-between">
+    <div className="glass-scrollbar flex h-full items-center justify-center overflow-y-auto rounded-xl p-3 sm:p-6">
+      <div className="liquid-panel-strong relative w-full max-w-2xl overflow-hidden rounded-xl">
+        <div className="flex items-center justify-between border-b border-border p-5 sm:p-6">
           <div>
-            <h2 className="text-xl font-bold text-text-main">
+            <h2 className="text-lg font-bold text-text-main sm:text-xl">
               {sessionId ? 'Edit Data Bayi' : 'Selamat Datang di ParentEase'}
             </h2>
             <p className="text-text-muted text-sm">Asisten parenting cerdas</p>
           </div>
           {sessionId && (
-            <button onClick={onClose} className="p-2 hover:bg-bg-tertiary rounded-full text-text-muted">
+            <button onClick={onClose} className="rounded-lg p-2 text-text-muted hover:bg-bg-tertiary">
               <X className="w-5 h-5" />
             </button>
           )}
@@ -137,7 +137,7 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
               Memuat data anak...
             </div>
           ) : (
-            <div className="p-6">
+            <div className="p-5 sm:p-6">
               {error && (
                 <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm border border-red-100">
                   {error}
@@ -154,26 +154,30 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                     required
                     value={formData.tanggal_lahir}
                     onChange={handleChange}
-                    className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary text-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-100"
+                    className="w-full rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-text-main outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                 </div>
 
                 {/* Gender */}
                 <div>
                   <label className="block text-sm font-medium text-text-main mb-1.5">Jenis Kelamin *</label>
-                  <div className="flex gap-3">
-                    {['L', 'P'].map((g) => (
-                      <button 
-                        key={g} 
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {[
+                      { value: 'L', label: 'Laki-laki', Icon: Mars },
+                      { value: 'P', label: 'Perempuan', Icon: Venus },
+                    ].map(({ value, label, Icon }) => (
+                      <button
+                        key={value}
                         type="button"
-                        onClick={() => setFormData({...formData, gender: g})}
-                        className={`flex-1 py-2.5 px-4 rounded-lg border text-sm font-medium transition ${
-                          formData.gender === g 
-                            ? 'border-primary bg-primary-light text-primary' 
-                            : 'border-border text-text-muted hover:bg-bg-tertiary'
+                        onClick={() => setFormData({...formData, gender: value})}
+                        className={`flex items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition ${
+                          formData.gender === value
+                            ? 'border-primary bg-primary-light text-primary shadow-sm'
+                            : 'border-border bg-bg-tertiary text-text-muted hover:border-primary-border hover:text-primary'
                         }`}
                       >
-                        {g === 'L' ? '👦 Laki-laki' : '👧 Perempuan'}
+                        <Icon className="h-4 w-4" />
+                        {label}
                       </button>
                     ))}
                   </div>
@@ -188,12 +192,12 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                     value={formData.nama_anak}
                     onChange={handleChange}
                     placeholder="Misal: Aisyah"
-                    className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition"
+                    className="w-full rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-text-main outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                 </div>
 
                 {/* Berat & Tinggi */}
-                <div className="grid grid-cols-2 gap-5">
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                   <div>
                     <label className="block text-sm font-medium text-text-main mb-1.5">Berat Badan (kg)</label>
                     <input 
@@ -202,7 +206,7 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                       step="0.1"
                       value={formData.berat_badan_kg}
                       onChange={handleChange}
-                      className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition"
+                      className="w-full rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-text-main outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                     />
                   </div>
                   <div>
@@ -213,7 +217,7 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                       step="0.1"
                       value={formData.tinggi_badan_cm}
                       onChange={handleChange}
-                      className="w-full px-4 py-2.5 rounded-lg border border-border bg-bg-tertiary focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition"
+                      className="w-full rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-text-main outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                     />
                   </div>
                 </div>
@@ -223,7 +227,7 @@ const WelcomeForm = ({ onSessionCreated, onClose, initialData, sessionId, onNewS
                   disabled={loading}
                   className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary-hover transition disabled:opacity-50 flex items-center justify-center gap-2 mt-4 shadow-md shadow-primary/20"
                 >
-                  <Baby className="w-5 h-5" />
+                  {sessionId && <Baby className="w-5 h-5" />}
                   {loading ? 'Menyimpan...' : (sessionId ? 'Simpan Perubahan' : 'Mulai Konsultasi')}
                 </button>
               </form>

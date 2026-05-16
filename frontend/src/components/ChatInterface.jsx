@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Bot, Edit3, BookOpen, ExternalLink, Loader2, Paperclip, FileText, X } from 'lucide-react';
+import { Send, Edit3, BookOpen, ExternalLink, Loader2, Paperclip, FileText, X } from 'lucide-react';
 import { sendMessage, getMessages, uploadPDF } from '../services/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -15,6 +15,31 @@ const TypingIndicator = () => (
     <span className="w-2 h-2 bg-primary rounded-full animate-bounce delay-75"></span>
     <span className="w-2 h-2 bg-primary rounded-full animate-bounce delay-150"></span>
   </div>
+);
+
+const ParentEaseMascot = ({ className = "h-20 w-20" }) => (
+  <svg
+    viewBox="0 0 72 72"
+    aria-hidden="true"
+    className={`${className} drop-shadow-sm`}
+    fill="none"
+  >
+    <line x1="36" y1="13" x2="36" y2="20" stroke="#347FA8" strokeWidth="3.2" strokeLinecap="round" />
+    <circle cx="36" cy="10" r="4" fill="#BDEFE2" stroke="#347FA8" strokeWidth="2.4" />
+    <rect x="14" y="35" width="7" height="12" rx="3.5" fill="#6BAED6" />
+    <rect x="51" y="35" width="7" height="12" rx="3.5" fill="#6BAED6" />
+    <rect x="18" y="24" width="36" height="30" rx="10" fill="#72C9C3" />
+    <path
+      d="M25 25.5h22c2.7 0 5 2.2 5 5v2.2C48.3 30.2 42.7 29 36 29s-12.3 1.2-16 3.7v-2.2c0-2.8 2.2-5 5-5Z"
+      fill="#AEE8DD"
+    />
+    <rect x="24" y="31" width="24" height="17" rx="5.5" fill="#F8FCFF" />
+    <circle cx="30.2" cy="38.1" r="2.5" fill="#172033" />
+    <circle cx="41.8" cy="38.1" r="2.5" fill="#172033" />
+    <path d="M32.8 43h6.4" stroke="#172033" strokeWidth="2.3" strokeLinecap="round" />
+    <rect x="24" y="54" width="24" height="8" rx="4" fill="#BDEFE2" />
+    <path d="M30.5 58h11" stroke="#4F9FC8" strokeWidth="2.4" strokeLinecap="round" />
+  </svg>
 );
 
 const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
@@ -298,18 +323,21 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
     };
 
     return (
-        <div className="flex flex-col h-full bg-bg-main">
-            <header className="h-16 border-b border-border p-6 flex items-center justify-between bg-bg-main/80 backdrop-blur-sm z-10">
+        <div className="liquid-panel-strong flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
+            <header className="z-10 flex min-h-16 items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
+                <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                <h1 className="font-bold text-lg text-text-main">ParentEase AI</h1>
-                <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">Online</span>
+                    <h1 className="truncate text-base font-bold text-text-main sm:text-lg">ParentEase AI</h1>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-600">Online</span>
                 </div>
-                <button onClick={onEditBabyData} className="flex items-center gap-2 px-3 py-1.5 text-sm text-primary border border-primary-border rounded-lg hover:bg-primary-light transition">
-                <Edit3 className="w-4 h-4" /> Edit Data Anak Saya
+                <p className="hidden text-xs text-text-muted sm:block">ASI, MPASI, vaksinasi, tumbuh kembang, dan dokumen KIA.</p>
+                </div>
+                <button onClick={onEditBabyData} className="flex shrink-0 items-center gap-2 rounded-lg border border-primary-border bg-primary-light px-3 py-2 text-sm text-primary transition hover:bg-primary/15">
+                <Edit3 className="w-4 h-4" /> <span className="hidden sm:inline">Edit Data Anak</span>
                 </button>
             </header>
 
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+            <div className="glass-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6 sm:py-6">
                 {isLoadingHistory ? (
                     <div className="h-full flex flex-col items-center justify-center text-text-muted">
                         <Loader2 className="w-8 h-8 animate-spin mb-3" />
@@ -318,32 +346,35 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
                 ) : (
                     <div>
                         {messages.length === 0 ? (
-                            <div className="h-full flex flex-col items-center justify-center text-center pb-20">
-                                <div className="w-16 h-16 bg-primary-light rounded-full flex items-center justify-center mb-6 shadow-sm">
-                                <Bot className="w-8 h-8 text-primary" />
+                            <div className="mx-auto flex min-h-[62vh] max-w-4xl flex-col items-center justify-center pb-16 text-center">
+                                <div className="relative mb-6 flex h-28 w-24 items-center justify-center">
+                                <div className="mascot-float">
+                                    <ParentEaseMascot />
                                 </div>
-                                <h2 className="text-2xl font-bold text-text-main mb-2">Halo! Ada yang bisa dibantu?</h2>
-                                <p className="text-text-muted max-w-md mb-8">Tanyakan seputar ASI, MPASI, vaksinasi, atau tumbuh kembang si kecil.</p>
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full max-w-3xl">
+                                <div className="mascot-float-shadow absolute bottom-2 h-2 w-12 rounded-full bg-primary/35 blur-sm" />
+                                </div>
+                                <h2 className="mb-2 text-xl font-bold text-text-main sm:text-2xl">Halo, ada yang bisa dibantu?</h2>
+                                <p className="mb-8 max-w-md text-sm text-text-muted sm:text-base">Tanyakan seputar ASI, MPASI, vaksinasi, tumbuh kembang, atau upload PDF Buku KIA.</p>
+                                <div className="grid w-full max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                                 {quickActions.map((action, idx) => (
-                                    <button key={idx} onClick={() => handleSend(action)} className="bg-bg-main border border-border text-text-main px-4 py-3 rounded-xl hover:border-primary-border hover:text-primary hover:shadow-sm transition text-sm font-medium">
+                                    <button key={idx} onClick={() => handleSend(action)} className="rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-sm font-medium text-text-main shadow-sm transition hover:border-primary-border hover:text-primary">
                                     {action}
                                     </button>
                                 ))}
                                 </div>
                             </div>
                         ) : (
-                            <div className="max-w-3xl mx-auto space-y-6">
+                            <div className="mx-auto max-w-4xl space-y-5">
                                 {messages.map((msg) => (
-                                <div key={msg.id} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                                <div key={msg.id} className={`flex gap-3 sm:gap-4 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                                     {msg.role === 'assistant' && (
-                                    <div className="w-8 h-8 bg-primary-light rounded-full flex-shrink-0 flex items-center justify-center mt-1 shadow-sm">
-                                        <Bot className="w-4 h-4 text-primary" />
+                                    <div className="mt-1 flex h-9 w-9 flex-shrink-0 items-center justify-center">
+                                        <ParentEaseMascot className="h-9 w-9" />
                                     </div>
                                     )}
-                                    <div className="max-w-[85%] min-w-[100px]">
-                                    <div className={`p-4 rounded-2xl text-sm leading-relaxed shadow-sm relative ${
-                                        msg.role === 'user' ? 'bg-primary text-white rounded-br-none' : 'bg-bg-tertiary text-text-main rounded-bl-none border border-border'
+                                    <div className="min-w-[100px] max-w-[92%] sm:max-w-[84%]">
+                                    <div className={`relative rounded-xl p-4 text-sm leading-relaxed shadow-sm ${
+                                        msg.role === 'user' ? 'bg-primary text-white' : 'border border-border bg-bg-tertiary text-text-main'
                                     }`}>
                                         {msg.role === 'assistant' ? (
                                         <>
@@ -396,7 +427,7 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
                                         </div>
                                         <div className="space-y-2">
                                             {msg.sources.map((source, sIdx) => (
-                                            <div key={sIdx} className="flex items-center gap-3 px-3 py-2 bg-bg-main rounded-lg border border-border hover:border-primary/30 transition shadow-sm group">
+                                            <div key={sIdx} className="group flex items-center gap-3 rounded-lg border border-border bg-bg-main px-3 py-2 shadow-sm transition hover:border-primary/30">
                                                 <div className="w-8 h-8 bg-primary/10 rounded-md flex items-center justify-center flex-shrink-0">
                                                 <BookOpen className="w-4 h-4 text-primary" />
                                                 </div>
@@ -426,14 +457,14 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
                 )}
             </div>
 
-            <div className="p-4 bg-bg-main border-t border-border">
-                <div className="max-w-3xl mx-auto">
+            <div className="border-t border-border bg-bg-main/60 p-3 sm:p-4">
+                <div className="mx-auto max-w-4xl">
                 {selectedFile && (
-                    <div className="flex items-center gap-2 mb-2 px-1">
-                        <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-3 py-1.5 text-sm">
+                    <div className="mb-2 flex items-center gap-2 px-1">
+                        <div className="flex max-w-full items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-1.5 text-sm">
                             <FileText className="w-4 h-4 text-primary flex-shrink-0" />
-                            <span className="text-text-main truncate max-w-[200px]">{selectedFile.name}</span>
-                            <span className="text-text-muted text-xs">({(selectedFile.size / 1024).toFixed(0)} KB)</span>
+                            <span className="max-w-[48vw] truncate text-text-main sm:max-w-[320px]">{selectedFile.name}</span>
+                            <span className="hidden text-xs text-text-muted sm:inline">({(selectedFile.size / 1024).toFixed(0)} KB)</span>
                             <button
                                 type="button"
                                 onClick={handleRemoveFile}
@@ -445,7 +476,7 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
                     </div>
                 )}
                 <form onSubmit={(e) => { e.preventDefault(); handleSend(input); }}>
-                    <div className="flex items-center bg-bg-tertiary border border-border rounded-2xl px-4 py-2 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition shadow-sm">
+                    <div className="flex items-center rounded-xl border border-border bg-bg-tertiary px-3 py-2 shadow-sm transition focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 sm:px-4">
                     <input
                         type="file"
                         ref={fileInputRef}
@@ -467,13 +498,13 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         placeholder={selectedFile ? "Tambahkan pesan (opsional)..." : "Tanya seputar ASI, MPASI, tumbuh kembang..."}
-                        className="flex-1 bg-transparent border-none focus:outline-none text-text-main placeholder-text-light py-2"
+                        className="min-w-0 flex-1 border-none bg-transparent py-2 text-text-main placeholder-text-light focus:outline-none"
                         disabled={isSending}
                     />
                     <button 
                         type="submit" 
                         disabled={(!input.trim() && !selectedFile) || isSending}
-                        className="ml-2 w-10 h-10 bg-primary text-white rounded-xl hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center transition shadow-sm"
+                        className="ml-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-white shadow-sm transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <Send className="w-5 h-5" />
                     </button>

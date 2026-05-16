@@ -15,6 +15,16 @@ function App() {
   const [babyData, setBabyData] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    const storedTheme = localStorage.getItem('parentease_theme');
+    if (storedTheme === 'light' || storedTheme === 'dark') return storedTheme;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('parentease_theme', theme);
+  }, [theme]);
 
   // Jika user baru, tampilkan form
   useEffect(() => {
@@ -88,18 +98,20 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#F4F6F9]">
+    <div className="flex h-[100dvh] min-h-[100dvh] flex-col overflow-hidden bg-[var(--app-bg)] p-2 text-text-main sm:p-3 lg:flex-row lg:p-4">
       {/* Sidebar History */}
       <Sidebar 
         activeSessionId={sessionId}  // untuk highlight session aktif
         onSelectSession={handleSelectSession}  // untuk handle klik
         onNewSession={handleNewSession}  // Ganti nama prop agar konsisten
+        theme={theme}
+        onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
       />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex min-h-0 flex-1 flex-col lg:pl-3">
         {isLoadingSession ? (
-          <div className="flex-1 flex items-center justify-center text-text-muted">
+          <div className="liquid-panel flex flex-1 items-center justify-center rounded-xl text-text-muted">
             Memuat data...
           </div>
         ) : showForm ? (
