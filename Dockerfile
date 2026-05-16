@@ -1,11 +1,11 @@
 # ==========================================
 # Stage 1: Build
 # ==========================================
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS build
 WORKDIR /app
 
-# Force uv to use the system's Python 3.12 and compile bytecode directly
-ENV UV_PYTHON=python3.12
+# Force uv to use the system's Python 3.13 and compile bytecode directly
+ENV UV_PYTHON=python3.13
 ENV UV_COMPILE_BYTECODE=1
 
 # Install system dependencies required to compile native extensions (like tokie/chonkie)
@@ -26,11 +26,10 @@ RUN uv run python -m compileall .
 # ==========================================
 # Stage 2: Runtime
 # ==========================================
-FROM python:3.12-slim
+FROM python:3.13-slim
 WORKDIR /app
 
 # Add the virtual environment's bin directory to the PATH.
-# This eliminates the need to install or run 'uv' in the production image.
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
