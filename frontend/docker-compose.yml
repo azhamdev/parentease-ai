@@ -1,0 +1,58 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    container_name: parentease-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - parentease-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------
+  # Backend placeholder - update image/build to match yours
+  # -------------------------------------------------------
+  backend:
+    image: ${BACKEND_IMAGE:-parentease-backend:latest}
+    # Alternatively, build from source:
+    # build:
+    #   context: ../backend
+    #   dockerfile: Dockerfile
+    container_name: parentease-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./app.db}
+    networks:
+      - parentease-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.50"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  parentease-net:
+    driver: bridge
