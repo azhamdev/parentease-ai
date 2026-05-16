@@ -128,6 +128,30 @@ pediatric_guidelines
 434 chunks
 ```
 
+Chunking method:
+
+```text
+library       : Chonkie TokenChunker
+chunk type    : token-based, bukan character-based
+chunk size    : 512 tokens
+overlap       : 64 tokens
+embedding     : openai/text-embedding-3-small via OpenRouter
+vector store  : ChromaDB collection pediatric_guidelines
+metadata      : source filename, chunk_index, page
+```
+
+Flow ingest PDF:
+
+```text
+data/*.pdf
+  -> pypdf extracts text per page
+  -> pages joined with separators
+  -> Chonkie TokenChunker splits into 512-token chunks with 64-token overlap
+  -> each chunk embedded with OpenRouter embedding model
+  -> chunk + embedding + metadata stored in ChromaDB
+  -> document ingest metadata stored in PostgreSQL document table
+```
+
 Catatan: Chroma bukan PostgreSQL. Chroma menyimpan vector index PDF lokal di `chroma_db/`. PostgreSQL hanya menyimpan metadata dokumen untuk proof/debugging.
 
 PostgreSQL proof setelah ingest:

@@ -44,7 +44,7 @@ Chat auto vaccine tool   : tersedia
 Basic red flag handler   : tersedia
 RAG Chroma static PDFs   : tersedia lokal setelah ingest
 Tool call audit table    : tersedia untuk tracking pemanggilan tool
-MCP server               : tersedia untuk calculate_vaccine_schedule, detect_red_flags, verify_url_source
+MCP server               : tersedia untuk calculate_vaccine_schedule, detect_red_flags, search_medical_guidelines, verify_url_source
 Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
 Growth/z-score valid WHO : belum dibuat
 PDF upload               : belum dibuat
@@ -376,6 +376,7 @@ Tool yang diekspos:
 ```text
 calculate_vaccine_schedule
 detect_red_flags
+search_medical_guidelines
 verify_url_source
 ```
 
@@ -397,12 +398,20 @@ M1 agent receives urgent medical text
   -> if red flag found, return reasons, urgent action, and red_flag_rule source
   -> M1 prioritizes urgent safety answer before general RAG answer
 
+M1 agent needs guideline context
+  -> M1 calls MCP tool search_medical_guidelines
+  -> M3 tool validates query
+  -> Chroma searches local PDF chunks
+  -> M1 uses returned content and rag_document sources in the answer
+
 M1 agent receives a URL
   -> M1 calls MCP tool verify_url_source
   -> M3 tool validates URL format
   -> Tavily extracts article content
-  -> local RAG checks overlap with trusted pediatric references
-  -> M1 uses verdict to answer whether the article is supported
+  -> LLM extracts the main verifiable claims
+  -> local RAG retrieves trusted PDF chunks for those claims
+  -> LLM judges each claim as supported, contradicted, or not_enough_evidence
+  -> M1 uses verdict, confidence, claim_judgments, and sources to answer
 ```
 
 Untuk quick action seperti `Jadwal vaksinasi bayi`, frontend tetap mengirim chat biasa ke `/api/v1/chat`. Backend agent mendeteksi intent vaksin, mengambil `ChildProfile` dan `VaccineRecord`, lalu memanggil MCP tool `calculate_vaccine_schedule` ke `MCP_SERVER_URL`. Jika MCP server mati, chat mengembalikan degraded response dan `toolcall` dicatat dengan status `error`, bukan fallback direct function.
@@ -558,6 +567,29 @@ asi_guidelines.pdf  -> 50 chunks
 buku_kia_2024.pdf   -> 384 chunks
 total               -> 434 chunks
 collection          -> pediatric_guidelines
+```
+
+- Metode chunking RAG PDF:
+
+```text
+library       : Chonkie TokenChunker
+chunk type    : token-based
+chunk size    : 512 tokens
+overlap       : 64 tokens
+embedding     : openai/text-embedding-3-small via OpenRouter
+vector store  : ChromaDB collection pediatric_guidelines
+metadata      : source filename, chunk_index, page
+```
+
+- Flow ingest:
+
+```text
+data/*.pdf
+  -> pypdf extract text per page
+  -> Chonkie TokenChunker split text
+  -> OpenRouter embedding
+  -> ChromaDB vector upsert
+  -> PostgreSQL document metadata upsert
 ```
 
 - `chroma_db/` tetap di-ignore oleh git, jadi setiap developer perlu menjalankan ingest sendiri jika ingin punya index lokal.
@@ -749,16 +781,15 @@ Scope MVP M3 yang sudah dikerjakan:
 - Endpoint tool `/api/v1/tools/vaccine-schedule`.
 - Endpoint riwayat vaksin per profile.
 - Integrasi chat agar pertanyaan vaksin otomatis memakai MCP tool.
-- Pre-retrieve Chroma untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
+- Pre-retrieve Chroma via MCP untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
 - Basic medical red flag handler via MCP tool.
 - URL verification via MCP tool `verify_url_source`.
 - Date/number normalization untuk form frontend lokal Indonesia.
-- MCP server untuk expose `calculate_vaccine_schedule`, `detect_red_flags`, dan `verify_url_source`.
+- MCP server untuk expose `calculate_vaccine_schedule`, `detect_red_flags`, `search_medical_guidelines`, dan `verify_url_source`.
 
 Scope yang sengaja belum menjadi MVP:
 
 - Redis/Celery worker untuk flow upload/chat aktif.
-- MCP server untuk tool RAG tambahan seperti `search_medical_guidelines`.
 - Growth chart/z-score valid WHO.
 - Intent classifier berbasis model khusus.
 
@@ -1200,11 +1231,11 @@ build base prompt
   -> inject child profile if available
   -> call MCP detect_red_flags
   -> if red flag: return urgent safety response and stop
-  -> if medical keyword: pre-retrieve Chroma
+  -> if medical keyword: call MCP search_medical_guidelines
   -> if vaccine keyword + birth_date: call MCP calculate_vaccine_schedule
   -> if vaccine keyword without birth_date: answer general RAG info and ask user to update child data
   -> call LLM streaming
-  -> if LLM function-call search_medical_guidelines: execute it
+  -> if LLM function-call search_medical_guidelines: execute via MCP
   -> append [SOURCES]
   -> save assistant ChatMessage
 ```
@@ -1233,6 +1264,7 @@ MCP tools
   -> logic deterministic / personal
   -> detect_red_flags: cek tanda bahaya dari pesan user
   -> calculate_vaccine_schedule: hitung jadwal vaksin dari birth_date + riwayat vaksin
+  -> search_medical_guidelines: cari konteks PDF dari Chroma lokal
   -> verify_url_source: verifikasi artikel URL dengan Tavily + RAG lokal
 
 LLM

@@ -55,26 +55,26 @@ Ingest PDFs once for local RAG:
 uv run -m scripts.ingest_pdfs
 ```
 
-Run backend:
+Run the full local stack:
 
 ```bash
 make dev
 ```
 
-Run MCP tool server in another terminal:
+This starts:
 
-```bash
-make mcp
+```text
+Backend API : http://127.0.0.1:8000
+MCP Server  : http://127.0.0.1:8001
+React UI    : http://localhost:5173
 ```
 
-`make mcp` is required for MCP-backed tools such as red flag detection and the personalized vaccine schedule in chat.
+Use the React UI at `http://localhost:5173` for the active MVP frontend.
 
-Run frontend in another terminal:
+Backend-only mode:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+make api
 ```
 
 Optional verification:
@@ -102,7 +102,7 @@ Ingest PDFs into local ChromaDB for the first time:
 uv run -m scripts.ingest_pdfs
 ```
 
-Run backend:
+Run the full local stack:
 
 ```bash
 make dev
@@ -120,13 +120,24 @@ MCP tool server runs at:
 http://127.0.0.1:8001
 ```
 
+React frontend runs at:
+
+```text
+http://localhost:5173
+```
+
 MCP tools currently exposed:
 
 ```text
 calculate_vaccine_schedule
 detect_red_flags
+search_medical_guidelines
 verify_url_source
 ```
+
+`verify_url_source` uses Tavily to extract article content, then checks article
+claims against local RAG chunks and returns a verdict, confidence, claim-level
+judgments, and sources.
 
 ## Database
 
