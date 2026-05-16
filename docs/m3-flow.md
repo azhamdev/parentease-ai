@@ -44,7 +44,7 @@ Chat auto vaccine tool   : tersedia
 Basic red flag handler   : tersedia
 RAG Chroma static PDFs   : tersedia lokal setelah ingest
 Tool call audit table    : tersedia untuk tracking pemanggilan tool
-MCP server               : tersedia untuk calculate_vaccine_schedule dan detect_red_flags
+MCP server               : tersedia untuk calculate_vaccine_schedule, detect_red_flags, verify_url_source
 Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
 Growth/z-score valid WHO : belum dibuat
 PDF upload               : belum dibuat
@@ -376,6 +376,7 @@ Tool yang diekspos:
 ```text
 calculate_vaccine_schedule
 detect_red_flags
+verify_url_source
 ```
 
 MCP input schema mengikuti schema masing-masing tool. M1 hanya perlu tahu nama tool, input schema, dan response schema.
@@ -395,6 +396,13 @@ M1 agent receives urgent medical text
   -> M3 tool validates message + child_context
   -> if red flag found, return reasons, urgent action, and red_flag_rule source
   -> M1 prioritizes urgent safety answer before general RAG answer
+
+M1 agent receives a URL
+  -> M1 calls MCP tool verify_url_source
+  -> M3 tool validates URL format
+  -> Tavily extracts article content
+  -> local RAG checks overlap with trusted pediatric references
+  -> M1 uses verdict to answer whether the article is supported
 ```
 
 Untuk quick action seperti `Jadwal vaksinasi bayi`, frontend tetap mengirim chat biasa ke `/api/v1/chat`. Backend agent mendeteksi intent vaksin, mengambil `ChildProfile` dan `VaccineRecord`, lalu memanggil MCP tool `calculate_vaccine_schedule` ke `MCP_SERVER_URL`. Jika MCP server mati, chat mengembalikan degraded response dan `toolcall` dicatat dengan status `error`, bukan fallback direct function.
@@ -743,8 +751,9 @@ Scope MVP M3 yang sudah dikerjakan:
 - Integrasi chat agar pertanyaan vaksin otomatis memakai MCP tool.
 - Pre-retrieve Chroma untuk pertanyaan ASI/MPASI/vaksin/tumbuh kembang.
 - Basic medical red flag handler via MCP tool.
+- URL verification via MCP tool `verify_url_source`.
 - Date/number normalization untuk form frontend lokal Indonesia.
-- MCP server untuk expose `calculate_vaccine_schedule` dan `detect_red_flags`.
+- MCP server untuk expose `calculate_vaccine_schedule`, `detect_red_flags`, dan `verify_url_source`.
 
 Scope yang sengaja belum menjadi MVP:
 
@@ -1224,6 +1233,7 @@ MCP tools
   -> logic deterministic / personal
   -> detect_red_flags: cek tanda bahaya dari pesan user
   -> calculate_vaccine_schedule: hitung jadwal vaksin dari birth_date + riwayat vaksin
+  -> verify_url_source: verifikasi artikel URL dengan Tavily + RAG lokal
 
 LLM
   -> merangkai jawaban yang mudah dipahami user

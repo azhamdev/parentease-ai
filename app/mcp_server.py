@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.tools.red_flags import detect_red_flags
 from app.tools.schemas import VaccineScheduleRequest
+from app.tools.verify_url import verify_url_source
 from app.tools.vaccine_schedule import calculate_vaccine_schedule
 
 
@@ -58,7 +59,13 @@ def rpc(payload: JsonRpcRequest) -> dict:
     if payload.method == "tools/list":
         return _jsonrpc_result(
             payload.id,
-            {"tools": [_vaccine_schedule_tool_schema(), _red_flags_tool_schema()]},
+            {
+                "tools": [
+                    _vaccine_schedule_tool_schema(),
+                    _red_flags_tool_schema(),
+                    _verify_url_tool_schema(),
+                ]
+            },
         )
 
     if payload.method == "tools/call":
@@ -94,6 +101,9 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
 
     if tool_name == "detect_red_flags":
         return _handle_red_flags_tool(payload.id, arguments)
+
+    if tool_name == "verify_url_source":
+        return _handle_verify_url_tool(payload.id, arguments)
 
     return _jsonrpc_error(
         payload.id,
@@ -163,6 +173,42 @@ def _handle_red_flags_tool(
             "reasons": result.reasons,
             "action": result.action,
             "sources": sources,
+        },
+    )
+
+
+def _handle_verify_url_tool(
+    request_id: str | int | None,
+    arguments: dict[str, Any],
+) -> dict:
+    url = arguments.get("url")
+
+    if not isinstance(url, str) or not url.strip():
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'url' is required.",
+        )
+
+    if not url.startswith(("http://", "https://")):
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'url' must start with http:// or https://.",
+        )
+
+    result = verify_url_source(url)
+    return _jsonrpc_result(
+        request_id,
+        {
+            "tool_name": "verify_url_source",
+            "status": result.verdict,
+            "url": result.url,
+            "verdict": result.verdict,
+            "web_summary": result.web_summary,
+            "matched_rag_excerpts": result.matched_rag_excerpts,
+            "sources": result.rag_sources,
+            "explanation": result.explanation,
         },
     )
 
@@ -243,5 +289,22 @@ def _red_flags_tool_schema() -> dict:
                 },
             },
             "required": ["message"],
+        },
+    }
+
+
+def _verify_url_tool_schema() -> dict:
+    return {
+        "name": "verify_url_source",
+        "description": "Verifikasi apakah artikel URL konsisten dengan knowledge base pediatrik lokal.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL artikel yang dimulai dengan http:// atau https://.",
+                }
+            },
+            "required": ["url"],
         },
     }

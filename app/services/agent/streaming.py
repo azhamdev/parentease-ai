@@ -8,7 +8,7 @@ from dateutil.relativedelta import relativedelta
 import chromadb
 
 from app.services.agent.mcp_client import get_mcp_client
-from app.tools.verify_url import verify_url_source, extract_urls
+from app.tools.verify_url import extract_urls
 
 from app.utils.langfuse_logger import langfuse_client
 from langfuse import observe, propagate_attributes
@@ -344,6 +344,27 @@ def _format_red_flag_unavailable_response(error: Exception) -> str:
     )
 
 
+def _format_url_verification_result(result: dict) -> str:
+    lines = [
+        f"URL: {result.get('url', '')}",
+        f"Verdict: {result.get('verdict', result.get('status', 'no_match'))}",
+        f"Web Summary: {result.get('web_summary', '')}",
+    ]
+    excerpts = result.get("matched_rag_excerpts", [])
+    if excerpts:
+        lines.append("Matched RAG Excerpts:")
+        for index, excerpt in enumerate(excerpts, 1):
+            lines.append(f"  {index}. {excerpt.get('text', '')[:300]}")
+            source = excerpt.get("source", "")
+            if source:
+                lines.append(f"     Source: {source} (page {excerpt.get('page', '?')})")
+    else:
+        lines.append("Matched RAG Excerpts: none")
+    if result.get("explanation"):
+        lines.append(f"Explanation: {result['explanation']}")
+    return "\n".join(lines)
+
+
 # --- MAIN STREAMING FUNCTION ---
 @observe()
 async def stream_chat_response(
@@ -643,27 +664,32 @@ async def stream_chat_response(
             for target_url in urls[:3]:  # limit to 3 URLs per message
                 try:
                     print(f"🔗 Verifying URL: {target_url}")
-                    verification = verify_url_source(target_url)
+                    verification = await call_mcp_tool(
+                        "verify_url_source",
+                        {"url": target_url},
+                    )
                     if tool_audit_callback:
                         tool_audit_callback(
                             {
                                 "tool_name": "verify_url_source",
-                                "status": verification.verdict,
+                                "status": verification.get("status", "no_match"),
                                 "input_payload": {"url": target_url},
                                 "output_payload": {
-                                    "verdict": verification.verdict,
-                                    "web_summary": verification.web_summary[:500],
-                                    "explanation": verification.explanation,
+                                    "verdict": verification.get("verdict"),
+                                    "web_summary": verification.get("web_summary", "")[
+                                        :500
+                                    ],
+                                    "explanation": verification.get("explanation", ""),
                                     "matched_count": len(
-                                        verification.matched_rag_excerpts
+                                        verification.get("matched_rag_excerpts", [])
                                     ),
                                 },
-                                "sources": verification.rag_sources,
+                                "sources": verification.get("sources", []),
                             }
                         )
                     base_prompt += (
                         f"\n\n🔗 HASIL VERIFIKASI URL ({target_url}):\n"
-                        f"{verification.to_tool_string()}\n\n"
+                        f"{_format_url_verification_result(verification)}\n\n"
                         "Gunakan hasil verifikasi di atas untuk menjawab user. "
                         "Jelaskan apakah artikel tersebut sesuai, sebagian sesuai, "
                         "atau tidak sesuai dengan referensi terpercaya di knowledge base. "
@@ -673,7 +699,7 @@ async def stream_chat_response(
                         "Jika 'not_supported' atau 'no_match', peringatkan user agar hati-hati "
                         "dan sarankan merujuk ke sumber terpercaya atau konsultasi tenaga kesehatan."
                     )
-                    retrieved_sources.extend(verification.rag_sources)
+                    retrieved_sources.extend(verification.get("sources", []))
                 except Exception as url_err:
                     print(f"⚠️ URL verification error: {url_err}")
 
@@ -821,10 +847,15 @@ async def stream_chat_response(
                         elif tool_name == "verify_url_source":
                             target_url = args.get("url", "")
                             print(f"🔗 LLM requested URL verification: {target_url}")
-                            verification = verify_url_source(target_url)
-                            res = verification.to_tool_string()
-                            srcs = verification.rag_sources
-                            print(f"✅ URL verdict: {verification.verdict}")
+                            verification = await call_mcp_tool(
+                                "verify_url_source",
+                                {"url": target_url},
+                            )
+                            res = _format_url_verification_result(verification)
+                            srcs = verification.get("sources", [])
+                            print(
+                                f"✅ URL verdict: {verification.get('verdict', 'no_match')}"
+                            )
                         else:
                             res = f"Tool {tool_name} tidak dikenali."
                             srcs = []

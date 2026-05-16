@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +28,7 @@ class McpServerTest(unittest.TestCase):
         tool_names = {tool["name"] for tool in data["result"]["tools"]}
         self.assertIn("calculate_vaccine_schedule", tool_names)
         self.assertIn("detect_red_flags", tool_names)
+        self.assertIn("verify_url_source", tool_names)
 
     def test_calculate_vaccine_schedule_tool_call(self):
         response = self.client.post(
@@ -164,6 +166,58 @@ class McpServerTest(unittest.TestCase):
                 "params": {
                     "name": "detect_red_flags",
                     "arguments": {"child_context": {"age_months": 2}},
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
+
+    @patch.dict("os.environ", {"TAVILY_API_KEY": ""})
+    def test_verify_url_source_tool_call_without_api_key_returns_no_match(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "10",
+                "method": "tools/call",
+                "params": {
+                    "name": "verify_url_source",
+                    "arguments": {"url": "https://example.com/article"},
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        self.assertEqual(result["tool_name"], "verify_url_source")
+        self.assertEqual(result["status"], "no_match")
+        self.assertEqual(result["url"], "https://example.com/article")
+
+    def test_verify_url_source_requires_url(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "11",
+                "method": "tools/call",
+                "params": {"name": "verify_url_source", "arguments": {}},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
+
+    def test_verify_url_source_rejects_non_http_url(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "12",
+                "method": "tools/call",
+                "params": {
+                    "name": "verify_url_source",
+                    "arguments": {"url": "example.com/article"},
                 },
             },
         )

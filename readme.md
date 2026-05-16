@@ -125,6 +125,7 @@ MCP tools currently exposed:
 ```text
 calculate_vaccine_schedule
 detect_red_flags
+verify_url_source
 ```
 
 ## Database
