@@ -14,10 +14,16 @@ def init_langfuse() -> Langfuse | None:
     global langfuse_client
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    host = (
+        os.getenv("LANGFUSE_HOST")
+        or os.getenv("LANGFUSE_BASE_URL")
+        or "https://cloud.langfuse.com"
+    )
 
     if not public_key or not secret_key:
-        logger.warning("⚠️ Langfuse credentials not found. Tracing disabled.")
+        message = "Langfuse credentials not found. Tracing disabled."
+        logger.warning(message)
+        print(f"⚠️ {message}")
         return None
 
     try:
@@ -28,8 +34,11 @@ def init_langfuse() -> Langfuse | None:
             host=host,
             release="1.0.0",  # Opsional: versioning untuk trace
         )
-        logger.info("✅ Langfuse initialized successfully (v3 compatible)")
+        message = f"Langfuse initialized successfully: {host}"
+        logger.info(message)
+        print(f"✅ {message}")
         return langfuse_client
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Langfuse: {e}")
+        logger.error(f"Failed to initialize Langfuse: {e}")
+        print(f"❌ Failed to initialize Langfuse: {e}")
         return None

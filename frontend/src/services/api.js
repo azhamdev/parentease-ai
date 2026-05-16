@@ -55,7 +55,7 @@ export const createSession = async (data) => {
 };
 
 export const sendMessage = async (sessionId, message, onChunk) => {
-  const res = await fetch(`${API_URL}/chat`, {
+  const res = await fetch(`${API_URL}/chat/`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Session-ID": sessionId },
     body: JSON.stringify({ message }),
@@ -68,8 +68,9 @@ export const sendMessage = async (sessionId, message, onChunk) => {
   let fullResponse = "";
   let sources = [];
   let lastChar = "";
+  let isDone = false;
 
-  while (true) {
+  while (!isDone) {
     const { done, value } = await reader.read();
     if (done) break;
 
@@ -96,7 +97,10 @@ export const sendMessage = async (sessionId, message, onChunk) => {
       if (data === "") continue;
 
       const clean = data.trim();
-      if (clean === "[DONE]") break;
+      if (clean === "[DONE]") {
+        isDone = true;
+        break;
+      }
       if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
       if (clean.startsWith("[SOURCES]")) {
         try { sources = JSON.parse(clean.replace(/^\[SOURCES\]\s*/, "")); } catch { sources = []; }

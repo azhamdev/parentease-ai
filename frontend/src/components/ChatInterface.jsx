@@ -156,7 +156,18 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
             }
 
             if (!content || content.length === 0) {
-                setMessages(prev => prev.filter(msg => msg.id !== aiMsgId));
+                setMessages(prev =>
+                    prev.map(msg =>
+                        msg.id === aiMsgId
+                        ? {
+                            ...msg,
+                            content: 'Respons kosong dari server. Coba kirim ulang pertanyaan atau cek terminal backend.',
+                            sources: [],
+                            isStreaming: false
+                        }
+                        : msg
+                    )
+                );
                 return;
             }
 

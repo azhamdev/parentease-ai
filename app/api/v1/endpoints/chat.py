@@ -1,6 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
@@ -42,7 +43,7 @@ async def chat_endpoint_streaming(
         stmt = select(ChildProfile).where(ChildProfile.session_id == x_session_id)
         profile = session.exec(stmt).first()
         if profile:
-            child_data = profile.model_dump()
+            child_data = profile.model_dump(mode="json")
             vaccine_stmt = select(VaccineRecord).where(
                 VaccineRecord.session_id == x_session_id
             )
@@ -66,9 +67,9 @@ async def chat_endpoint_streaming(
                 session_id=x_session_id,
                 tool_name=payload["tool_name"],
                 status=payload["status"],
-                input_payload=payload.get("input_payload", {}),
-                output_payload=payload.get("output_payload", {}),
-                sources=payload.get("sources", []),
+                input_payload=jsonable_encoder(payload.get("input_payload", {})),
+                output_payload=jsonable_encoder(payload.get("output_payload", {})),
+                sources=jsonable_encoder(payload.get("sources", [])),
             )
             session.add(tool_call)
             session.commit()
@@ -154,14 +155,18 @@ async def upload_pdf_growth(
         session_id=x_session_id,
         tool_name="pdf_growth_extract",
         status="ok" if result.success else "error",
-        input_payload={"filename": file.filename, "size_bytes": len(pdf_bytes)},
-        output_payload={
-            "success": result.success,
-            "child_name": result.child_name,
-            "measurement_count": len(result.measurements),
-            "summary": result.summary,
-            "error": result.error,
-        },
+        input_payload=jsonable_encoder(
+            {"filename": file.filename, "size_bytes": len(pdf_bytes)}
+        ),
+        output_payload=jsonable_encoder(
+            {
+                "success": result.success,
+                "child_name": result.child_name,
+                "measurement_count": len(result.measurements),
+                "summary": result.summary,
+                "error": result.error,
+            }
+        ),
         sources=[],
     )
     session.add(tool_call)
@@ -203,7 +208,7 @@ async def upload_pdf_growth(
         stmt = select(ChildProfile).where(ChildProfile.session_id == x_session_id)
         profile = session.exec(stmt).first()
         if profile:
-            child_data = profile.model_dump()
+            child_data = profile.model_dump(mode="json")
 
     # Build the message for the agent with the extraction context
     agent_message = _build_agent_message(file.filename, user_text, result)
@@ -217,9 +222,9 @@ async def upload_pdf_growth(
                 session_id=x_session_id,
                 tool_name=payload["tool_name"],
                 status=payload["status"],
-                input_payload=payload.get("input_payload", {}),
-                output_payload=payload.get("output_payload", {}),
-                sources=payload.get("sources", []),
+                input_payload=jsonable_encoder(payload.get("input_payload", {})),
+                output_payload=jsonable_encoder(payload.get("output_payload", {})),
+                sources=jsonable_encoder(payload.get("sources", [])),
             )
             session.add(tc)
             session.commit()
