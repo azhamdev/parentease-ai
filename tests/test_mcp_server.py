@@ -4,6 +4,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.mcp_server import app
+from app.tools.medical_guidelines import MedicalGuidelinesResult
 
 
 class McpServerTest(unittest.TestCase):
@@ -28,6 +29,7 @@ class McpServerTest(unittest.TestCase):
         tool_names = {tool["name"] for tool in data["result"]["tools"]}
         self.assertIn("calculate_vaccine_schedule", tool_names)
         self.assertIn("detect_red_flags", tool_names)
+        self.assertIn("search_medical_guidelines", tool_names)
         self.assertIn("verify_url_source", tool_names)
 
     def test_calculate_vaccine_schedule_tool_call(self):
@@ -173,13 +175,62 @@ class McpServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["error"]["code"], -32602)
 
+    def test_search_medical_guidelines_tool_call(self):
+        with patch(
+            "app.mcp_server.search_medical_guidelines",
+            return_value=MedicalGuidelinesResult(
+                status="ok",
+                query="mpasi",
+                content="MPASI dimulai saat bayi berusia 6 bulan.",
+                sources=[
+                    {
+                        "type": "rag_document",
+                        "title": "Buku Kia 2024",
+                        "page": 88,
+                    }
+                ],
+            ),
+        ):
+            response = self.client.post(
+                "/rpc",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "10",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_medical_guidelines",
+                        "arguments": {"query": "kapan mulai mpasi"},
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        self.assertEqual(result["tool_name"], "search_medical_guidelines")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["sources"][0]["type"], "rag_document")
+
+    def test_search_medical_guidelines_requires_query(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "11",
+                "method": "tools/call",
+                "params": {"name": "search_medical_guidelines", "arguments": {}},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
+
     @patch.dict("os.environ", {"TAVILY_API_KEY": ""})
     def test_verify_url_source_tool_call_without_api_key_returns_no_match(self):
         response = self.client.post(
             "/rpc",
             json={
                 "jsonrpc": "2.0",
-                "id": "10",
+                "id": "12",
                 "method": "tools/call",
                 "params": {
                     "name": "verify_url_source",
@@ -199,7 +250,7 @@ class McpServerTest(unittest.TestCase):
             "/rpc",
             json={
                 "jsonrpc": "2.0",
-                "id": "11",
+                "id": "13",
                 "method": "tools/call",
                 "params": {"name": "verify_url_source", "arguments": {}},
             },
@@ -213,7 +264,7 @@ class McpServerTest(unittest.TestCase):
             "/rpc",
             json={
                 "jsonrpc": "2.0",
-                "id": "12",
+                "id": "14",
                 "method": "tools/call",
                 "params": {
                     "name": "verify_url_source",

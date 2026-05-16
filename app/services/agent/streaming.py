@@ -1,18 +1,16 @@
 import os
 import json
 from typing import AsyncGenerator, Callable, cast
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 from datetime import date
 from dateutil.relativedelta import relativedelta
-import chromadb
 
 from app.services.agent.mcp_client import get_mcp_client
 from app.tools.verify_url import extract_urls
 
-from app.utils.langfuse_logger import langfuse_client
+from app.utils import langfuse_logger
 from langfuse import observe, propagate_attributes
-from langfuse.openai import openai as langfuse_openai
 
 
 # --- ✅ MCP CLIENT SETUP ---
@@ -28,46 +26,6 @@ def get_async_client():
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv("OPEN_ROUTER_API_KEY"),
     )
-
-
-def get_sync_client():
-    return OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPEN_ROUTER_API_KEY"),
-    )
-
-
-# --- CHROMADB SETUP (M2) ---
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-COLLECTION_NAME = "pediatric_guidelines"
-
-
-def _get_collection():
-    return chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-
-
-def _embed_query(text: str) -> list[float]:
-    client = get_sync_client()
-    resp = client.embeddings.create(model="openai/text-embedding-3-small", input=[text])
-    return resp.data[0].embedding
-
-
-def format_title(filename: str) -> str:
-    return filename.removesuffix(".pdf").replace("_", " ").replace("-", " ").title()
-
-
-@observe()
-def search_medical_guidelines(query: str) -> tuple[str, list[dict]]:
-    """Fungsi pencarian RAG lokal (M2 Scope) - TETAP DIGUNAKAN."""
-    emb = _embed_query(query)
-    res = _get_collection().query(query_embeddings=[emb], n_results=3)
-    if res["documents"] and res["documents"][0]:
-        sources = [
-            {"title": format_title(m.get("source", "Unknown")), "page": m.get("page")}
-            for m in res["metadatas"][0]
-        ]
-        return "\n\n---\n\n".join(res["documents"][0]), sources
-    return "Tidak ditemukan panduan medis yang relevan.", []
 
 
 # --- TOOLS SCHEMA (UNTUK LLM) ---
@@ -348,8 +306,22 @@ def _format_url_verification_result(result: dict) -> str:
     lines = [
         f"URL: {result.get('url', '')}",
         f"Verdict: {result.get('verdict', result.get('status', 'no_match'))}",
+        f"Confidence: {result.get('confidence', 'unknown')}",
         f"Web Summary: {result.get('web_summary', '')}",
     ]
+    claim_judgments = result.get("claim_judgments", [])
+    if claim_judgments:
+        lines.append("Claim Judgments:")
+        for index, judgment in enumerate(claim_judgments, 1):
+            lines.append(
+                "  "
+                f"{index}. {judgment.get('verdict', 'not_enough_evidence')} "
+                f"({judgment.get('confidence', 'unknown')}): "
+                f"{judgment.get('claim', '')}"
+            )
+            rationale = judgment.get("rationale")
+            if rationale:
+                lines.append(f"     Rationale: {rationale}")
     excerpts = result.get("matched_rag_excerpts", [])
     if excerpts:
         lines.append("Matched RAG Excerpts:")
@@ -398,7 +370,9 @@ async def stream_chat_response(
             f"  - Topik dewasa yang tidak berkaitan dengan parenting\n"
             f"  - Atau topik non-parenting lainnya\n"
             f"- Jika user bertanya di luar scope, TOLAK dengan sopan dan arahkan kembali ke topik parenting.\n\n"
-            f"👥 SAPAAN: Gunakan 'Bunda/Ayah', 'Anda', atau 'Parent'. Jika ada ekstraksi nama orang tua, sebut nama orang tuanya. Jangan asumsikan gender.\n\n"
+            f"👥 SAPAAN: Gunakan sapaan netral seperti 'Parent' atau 'Ayah/Bunda'. "
+            f"Jangan memilih hanya 'Bunda' atau hanya 'Ayah' kecuali user menyebut preferensi/identitasnya sendiri. "
+            f"Jika ada nama orang tua dari ekstraksi data, sebut namanya tanpa mengasumsikan gender.\n\n"
             f"📝 ATURAN FORMAT WAJIB (IKUTI PERSIS):\n\n"
             f"1. STRUKTUR JAWABAN:\n"
             f"- Mulai dengan salam hangat dan konteks singkat\n"
@@ -439,8 +413,8 @@ async def stream_chat_response(
             f"- Gunakan paragraf pendek agar mudah dibaca\n"
             f"\n**CONTOH RESPONSE YANG BAIK:**\n\n"
             f"Halo Parent! 👋 Berikut informasi untuk Anda:\n\n"
-            # jika ada ekstraksi dari pdf dan nama orang tua, panggil dengan nama tersebut, contoh: "Halo Bunda "nama"
-            f"- Panggil nama bunda/papa jika tersedia, contoh: 'Halo Bunda Siti!'\n"
+            f"- Gunakan sapaan netral. Contoh: 'Halo Parent!' atau 'Halo Ayah/Bunda!'. "
+            f"Jika nama orang tua tersedia, gunakan 'Halo, [Nama]!' tanpa menambahkan Bunda/Ayah kecuali preferensi user jelas.\n"
             f"**1. Usia Ideal MPASI**\n"
             f"- **Rekomendasi WHO**: 6 bulan\n"
             f"- **Tanda siap**:\n"
@@ -533,10 +507,34 @@ async def stream_chat_response(
         retrieved_sources: list[dict] = []
         if should_retrieve_guidelines(user_message):
             try:
-                retrieved_context, retrieved_sources = search_medical_guidelines(
-                    user_message
+                guideline_result = await call_mcp_tool(
+                    "search_medical_guidelines",
+                    {"query": user_message, "n_results": 3},
                 )
+                retrieved_context = guideline_result.get("content", "")
+                retrieved_sources = guideline_result.get("sources", [])
                 print(f"🔍 Pre-retrieved {len(retrieved_sources)} source(s)")
+                if tool_audit_callback:
+                    tool_audit_callback(
+                        {
+                            "tool_name": guideline_result.get(
+                                "tool_name",
+                                "search_medical_guidelines",
+                            ),
+                            "status": guideline_result.get("status", "ok"),
+                            "input_payload": {
+                                "query": user_message,
+                                "n_results": 3,
+                                "phase": "pre_retrieve",
+                            },
+                            "output_payload": {
+                                "status": guideline_result.get("status", "ok"),
+                                "content_length": len(retrieved_context),
+                                "source_count": len(retrieved_sources),
+                            },
+                            "sources": retrieved_sources,
+                        }
+                    )
                 base_prompt += (
                     "\n\n📚 KONTEKS DARI KNOWLEDGE BASE:\n"
                     f"{retrieved_context}\n\n"
@@ -545,6 +543,20 @@ async def stream_chat_response(
                 )
             except Exception as retrieve_err:
                 print(f"⚠️ Pre-retrieval error: {retrieve_err}")
+                if tool_audit_callback:
+                    tool_audit_callback(
+                        {
+                            "tool_name": "search_medical_guidelines",
+                            "status": "error",
+                            "input_payload": {
+                                "query": user_message,
+                                "n_results": 3,
+                                "phase": "pre_retrieve",
+                            },
+                            "output_payload": {"error": str(retrieve_err)},
+                            "sources": [],
+                        }
+                    )
 
         if should_calculate_vaccine_schedule(user_message):
             vaccine_child_context = child_context or {}
@@ -711,9 +723,9 @@ async def stream_chat_response(
         # LANGFUSE: Safe Client Selection
         trace = None
 
-        if langfuse_client is not None:
+        if langfuse_logger.langfuse_client is not None:
             try:
-                trace_method = getattr(langfuse_client, "trace", None)
+                trace_method = getattr(langfuse_logger.langfuse_client, "trace", None)
 
                 if trace_method is not None:
                     trace = trace_method(
@@ -730,7 +742,7 @@ async def stream_chat_response(
         # Jika langfuse aktif, gunakan client ter-instrumentasi. Jika tidak, pakai async_client biasa.
         llm_client: AsyncOpenAI = async_client
 
-        if langfuse_client is not None:
+        if langfuse_logger.langfuse_client is not None:
             try:
                 from langfuse.openai import openai as langfuse_openai
 
@@ -744,14 +756,6 @@ async def stream_chat_response(
                 pass
 
         try:
-            # 🔍 LOG: Check ChromaDB status
-            try:
-                collection = _get_collection()
-                count = collection.count()
-                print(f"📚 ChromaDB has {count} documents")
-            except Exception as db_err:
-                print(f"⚠️ ChromaDB check error: {db_err}")
-
             stream = await llm_client.chat.completions.create(
                 model="mistralai/mistral-large",
                 messages=messages,
@@ -762,6 +766,7 @@ async def stream_chat_response(
 
             tool_calls_buffer = []
             has_tools = False
+            direct_content = ""
             _last_char = ""
 
             # 1️⃣ Stream awal (bisa trigger tool call)
@@ -778,6 +783,7 @@ async def stream_chat_response(
                         yield " "
                     yield token
                     _last_char = token[-1]
+                    direct_content += token
 
                 if chunk.choices[0].delta.tool_calls:
                     has_tools = True
@@ -839,10 +845,14 @@ async def stream_chat_response(
                                 srcs = []
 
                         elif tool_name == "search_medical_guidelines":
-                            # Fallback ke local logic (M2 Scope)
                             query = args.get("query", "")
-                            print(f"🔍 Searching locally for: {query}")
-                            res, srcs = search_medical_guidelines(query)
+                            print(f"🔌 Routing RAG search to MCP Server: {query}")
+                            guideline_result = await call_mcp_tool(
+                                "search_medical_guidelines",
+                                {"query": query, "n_results": args.get("n_results", 3)},
+                            )
+                            res = guideline_result.get("content", "")
+                            srcs = guideline_result.get("sources", [])
                             print(f"✅ Found {len(srcs)} source(s)")
                         elif tool_name == "verify_url_source":
                             target_url = args.get("url", "")
@@ -936,7 +946,25 @@ async def stream_chat_response(
                     print("⚠️ No sources to send")
 
             elif not has_tools:
-                print("ℹ️ No tool calls detected - direct response")
+                print("ℹ️ No LLM-requested tool calls detected - direct response")
+                if not direct_content.strip():
+                    print("⚠️ Direct stream returned empty content; retrying once.")
+                    fallback_response = await async_client.chat.completions.create(
+                        model="mistralai/mistral-large",
+                        messages=messages,
+                        stream=False,
+                    )
+                    fallback_content = (
+                        fallback_response.choices[0].message.content or ""
+                    )
+                    if fallback_content.strip():
+                        yield fallback_content
+                    else:
+                        yield (
+                            "Maaf, saya belum bisa menyusun jawaban untuk pertanyaan "
+                            "ini. Coba kirim ulang pertanyaannya dengan sedikit konteks "
+                            "tambahan."
+                        )
                 unique_sources = _unique_sources(retrieved_sources)
                 if unique_sources:
                     print(

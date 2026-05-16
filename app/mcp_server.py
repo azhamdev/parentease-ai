@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, ValidationError
 
+from app.tools.medical_guidelines import search_medical_guidelines
 from app.tools.red_flags import detect_red_flags
 from app.tools.schemas import VaccineScheduleRequest
 from app.tools.verify_url import verify_url_source
@@ -63,6 +64,7 @@ def rpc(payload: JsonRpcRequest) -> dict:
                 "tools": [
                     _vaccine_schedule_tool_schema(),
                     _red_flags_tool_schema(),
+                    _medical_guidelines_tool_schema(),
                     _verify_url_tool_schema(),
                 ]
             },
@@ -101,6 +103,9 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
 
     if tool_name == "detect_red_flags":
         return _handle_red_flags_tool(payload.id, arguments)
+
+    if tool_name == "search_medical_guidelines":
+        return _handle_medical_guidelines_tool(payload.id, arguments)
 
     if tool_name == "verify_url_source":
         return _handle_verify_url_tool(payload.id, arguments)
@@ -177,6 +182,31 @@ def _handle_red_flags_tool(
     )
 
 
+def _handle_medical_guidelines_tool(
+    request_id: str | int | None,
+    arguments: dict[str, Any],
+) -> dict:
+    query = arguments.get("query")
+    n_results = arguments.get("n_results", 3)
+
+    if not isinstance(query, str) or not query.strip():
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'query' is required.",
+        )
+
+    if not isinstance(n_results, int):
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'n_results' must be an integer.",
+        )
+
+    result = search_medical_guidelines(query=query, n_results=n_results)
+    return _jsonrpc_result(request_id, result.model_dump())
+
+
 def _handle_verify_url_tool(
     request_id: str | int | None,
     arguments: dict[str, Any],
@@ -207,6 +237,8 @@ def _handle_verify_url_tool(
             "verdict": result.verdict,
             "web_summary": result.web_summary,
             "matched_rag_excerpts": result.matched_rag_excerpts,
+            "claim_judgments": result.claim_judgments,
+            "confidence": result.confidence,
             "sources": result.rag_sources,
             "explanation": result.explanation,
         },
@@ -289,6 +321,29 @@ def _red_flags_tool_schema() -> dict:
                 },
             },
             "required": ["message"],
+        },
+    }
+
+
+def _medical_guidelines_tool_schema() -> dict:
+    return {
+        "name": "search_medical_guidelines",
+        "description": "Cari panduan medis pediatrik dari knowledge base PDF lokal.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Pertanyaan/topik medis yang akan dicari di knowledge base.",
+                },
+                "n_results": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+            },
+            "required": ["query"],
         },
     }
 
