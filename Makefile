@@ -1,4 +1,4 @@
-.PHONY: db redis services migrate api api-server dev dev-async mcp frontend worker celery-health docker-build docker-up docker-down docker-logs
+.PHONY: db redis services migrate api api-server dev dev-async mcp frontend worker celery-health docker-build docker-up docker-down docker-logs docker-cert docker-cert-renew
 
 db:
 	docker compose up -d postgres
@@ -55,3 +55,10 @@ docker-down:
 
 docker-logs:
 	docker compose -f docker-compose.prod.yml logs -f
+
+docker-cert:
+	docker compose -f docker-compose.prod.yml --profile ssl run --rm certbot certonly --webroot --webroot-path /var/www/certbot -d parent-ease.web.id -d www.parent-ease.web.id
+
+docker-cert-renew:
+	docker compose -f docker-compose.prod.yml --profile ssl run --rm certbot renew --webroot --webroot-path /var/www/certbot
+	docker compose -f docker-compose.prod.yml restart nginx
