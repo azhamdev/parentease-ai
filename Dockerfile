@@ -1,8 +1,12 @@
 # ==========================================
 # Stage 1: Build
 # ==========================================
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS build
+# Use standard Python from Docker Hub instead of astral-sh/uv from GHCR
+FROM python:3.13-slim AS build
 WORKDIR /app
+
+# Install uv using pip to bypass ghcr.io timeout issues
+RUN pip install --no-cache-dir uv
 
 # Force uv to use the system's Python 3.13 and compile bytecode directly
 ENV UV_PYTHON=python3.13
@@ -22,31 +26,3 @@ COPY . .
 
 # Compile .py files for performance optimization
 RUN uv run python -m compileall .
-
-# ==========================================
-# Stage 2: Runtime
-# ==========================================
-FROM python:3.13-slim
-WORKDIR /app
-
-# Add the virtual environment's bin directory to the PATH.
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
-
-# Copy virtualenv and compiled application from the build stage
-COPY --from=build /app/.venv /app/.venv
-COPY --from=build /app /app
-
-# Create a secure non-root user
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
-RUN chown -R appuser:appgroup /app
-USER appuser
-
-EXPOSE 8000
-
-# Healthcheck updated to use the system python directly via the activated venv path
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')" || exit 1
-
-# Run uvicorn directly out of the copied virtual environment
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
