@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 
 from .schemas import (
     CompletedVaccine,
@@ -27,11 +29,34 @@ class VaccineRule:
     aliases: tuple[str, ...] = field(default_factory=tuple)
 
 
-SOURCE = VaccineScheduleSource(
-    title="Buku Kesehatan Ibu dan Anak 2024",
-    page=124,
-    year=2024,
-)
+SCHEDULE_DATA_PATH = Path(__file__).with_name("data") / "vaccine_schedule_id.json"
+
+
+def _load_schedule_data() -> dict:
+    with SCHEDULE_DATA_PATH.open(encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _load_source(data: dict) -> VaccineScheduleSource:
+    return VaccineScheduleSource.model_validate(data["source"])
+
+
+def _load_rules(data: dict) -> tuple[VaccineRule, ...]:
+    return tuple(
+        VaccineRule(
+            code=rule["code"],
+            label=rule["label"],
+            due_age_months=rule.get("due_age_months"),
+            due_age_days=rule.get("due_age_days"),
+            latest_age_months=rule.get("latest_age_months"),
+            latest_age_days=rule.get("latest_age_days"),
+            diseases_prevented=tuple(rule.get("diseases_prevented", [])),
+            notes=tuple(rule.get("notes", [])),
+            regional=rule.get("regional", False),
+            aliases=tuple(rule.get("aliases", [])),
+        )
+        for rule in data["rules"]
+    )
 
 
 # Initial ID schedule reviewed against Buku KIA 2024, section "Imunisasi Dasar
@@ -39,192 +64,9 @@ SOURCE = VaccineScheduleSource(
 # Recommended age columns in the source table:
 # 0-24 jam, 1, 2, 3, 4, 9, 10, 12, and 18 months.
 # Keep this deterministic; do not parse the PDF at request time.
-VACCINE_SCHEDULE_ID: tuple[VaccineRule, ...] = (
-    VaccineRule(
-        code="HB0",
-        label="Hepatitis B 0",
-        due_age_days=0,
-        latest_age_days=1,
-        diseases_prevented=("Hepatitis B", "Kanker hati"),
-        notes=("Diberikan kurang dari 24 jam setelah lahir.",),
-        aliases=("HEPATITIS_B_0", "HEPATITIS B", "HB-0"),
-    ),
-    VaccineRule(
-        code="BCG",
-        label="BCG",
-        due_age_months=1,
-        diseases_prevented=("Tuberkulosis",),
-    ),
-    VaccineRule(
-        code="OPV1",
-        label="Polio tetes 1",
-        due_age_months=1,
-        diseases_prevented=("Polio",),
-        aliases=("POLIO1", "POLIO_TETES_1"),
-    ),
-    VaccineRule(
-        code="DPT-HB-HIB1",
-        label="DPT-HB-Hib 1",
-        due_age_months=2,
-        diseases_prevented=(
-            "Difteri",
-            "Pertusis",
-            "Tetanus",
-            "Hepatitis B",
-            "Meningitis Hib",
-            "Pneumonia Hib",
-        ),
-        aliases=("DPT1", "DPT_HB_HIB_1"),
-    ),
-    VaccineRule(
-        code="OPV2",
-        label="Polio tetes 2",
-        due_age_months=2,
-        diseases_prevented=("Polio",),
-        aliases=("POLIO2", "POLIO_TETES_2"),
-    ),
-    VaccineRule(
-        code="RV1",
-        label="Rotavirus 1",
-        due_age_months=2,
-        latest_age_months=8,
-        diseases_prevented=("Diare berat akibat rotavirus",),
-        notes=("Harus dilengkapi sebelum usia 8 bulan.",),
-        aliases=("ROTAVIRUS1", "RV_1"),
-    ),
-    VaccineRule(
-        code="PCV1",
-        label="PCV 1",
-        due_age_months=2,
-        diseases_prevented=("Pneumonia pneumokokus",),
-        aliases=("PCV_1",),
-    ),
-    VaccineRule(
-        code="DPT-HB-HIB2",
-        label="DPT-HB-Hib 2",
-        due_age_months=3,
-        diseases_prevented=(
-            "Difteri",
-            "Pertusis",
-            "Tetanus",
-            "Hepatitis B",
-            "Meningitis Hib",
-            "Pneumonia Hib",
-        ),
-        aliases=("DPT2", "DPT_HB_HIB_2"),
-    ),
-    VaccineRule(
-        code="OPV3",
-        label="Polio tetes 3",
-        due_age_months=3,
-        diseases_prevented=("Polio",),
-        aliases=("POLIO3", "POLIO_TETES_3"),
-    ),
-    VaccineRule(
-        code="RV2",
-        label="Rotavirus 2",
-        due_age_months=3,
-        latest_age_months=8,
-        diseases_prevented=("Diare berat akibat rotavirus",),
-        notes=("Harus dilengkapi sebelum usia 8 bulan.",),
-        aliases=("ROTAVIRUS2", "RV_2"),
-    ),
-    VaccineRule(
-        code="PCV2",
-        label="PCV 2",
-        due_age_months=3,
-        diseases_prevented=("Pneumonia pneumokokus",),
-        aliases=("PCV_2",),
-    ),
-    VaccineRule(
-        code="DPT-HB-HIB3",
-        label="DPT-HB-Hib 3",
-        due_age_months=4,
-        diseases_prevented=(
-            "Difteri",
-            "Pertusis",
-            "Tetanus",
-            "Hepatitis B",
-            "Meningitis Hib",
-            "Pneumonia Hib",
-        ),
-        aliases=("DPT3", "DPT_HB_HIB_3"),
-    ),
-    VaccineRule(
-        code="OPV4",
-        label="Polio tetes 4",
-        due_age_months=4,
-        diseases_prevented=("Polio",),
-        aliases=("POLIO4", "POLIO_TETES_4"),
-    ),
-    VaccineRule(
-        code="IPV1",
-        label="Polio suntik IPV 1",
-        due_age_months=4,
-        diseases_prevented=("Polio",),
-        aliases=("IPV_1",),
-    ),
-    VaccineRule(
-        code="RV3",
-        label="Rotavirus 3",
-        due_age_months=4,
-        latest_age_months=8,
-        diseases_prevented=("Diare berat akibat rotavirus",),
-        notes=("Harus dilengkapi sebelum usia 8 bulan.",),
-        aliases=("ROTAVIRUS3", "RV_3"),
-    ),
-    VaccineRule(
-        code="MR1",
-        label="Campak Rubella 1",
-        due_age_months=9,
-        diseases_prevented=("Campak", "Rubella"),
-        aliases=("CAMPAK_RUBELLA_1", "MR", "CAMPAK"),
-    ),
-    VaccineRule(
-        code="IPV2",
-        label="Polio suntik IPV 2",
-        due_age_months=9,
-        diseases_prevented=("Polio",),
-        aliases=("IPV_2",),
-    ),
-    VaccineRule(
-        code="JE",
-        label="Japanese Encephalitis",
-        due_age_months=10,
-        diseases_prevented=("Japanese Encephalitis",),
-        notes=("Diberikan di daerah endemis atau wilayah program.",),
-        regional=True,
-        aliases=("JAPANESE_ENCEPHALITIS",),
-    ),
-    VaccineRule(
-        code="PCV3",
-        label="PCV 3",
-        due_age_months=12,
-        diseases_prevented=("Pneumonia pneumokokus",),
-        aliases=("PCV_3",),
-    ),
-    VaccineRule(
-        code="DPT-HB-HIB4",
-        label="DPT-HB-Hib lanjutan",
-        due_age_months=18,
-        diseases_prevented=(
-            "Difteri",
-            "Pertusis",
-            "Tetanus",
-            "Hepatitis B",
-            "Meningitis Hib",
-            "Pneumonia Hib",
-        ),
-        aliases=("DPT4", "DPT_HB_HIB_LANJUTAN"),
-    ),
-    VaccineRule(
-        code="MR2",
-        label="Campak Rubella lanjutan",
-        due_age_months=18,
-        diseases_prevented=("Campak", "Rubella"),
-        aliases=("CAMPAK_RUBELLA_2", "MR_LANJUTAN"),
-    ),
-)
+_SCHEDULE_DATA = _load_schedule_data()
+SOURCE = _load_source(_SCHEDULE_DATA)
+VACCINE_SCHEDULE_ID = _load_rules(_SCHEDULE_DATA)
 
 
 def calculate_vaccine_schedule(

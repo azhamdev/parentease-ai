@@ -1,10 +1,23 @@
 from datetime import date
+import json
 import unittest
 
-from app.tools.vaccine_schedule import VACCINE_SCHEDULE_ID, calculate_vaccine_schedule
+from app.tools.vaccine_schedule import (
+    SCHEDULE_DATA_PATH,
+    VACCINE_SCHEDULE_ID,
+    calculate_vaccine_schedule,
+)
 
 
 class VaccineScheduleTest(unittest.TestCase):
+    def test_schedule_data_is_loaded_from_json_file(self):
+        with SCHEDULE_DATA_PATH.open(encoding="utf-8") as file:
+            data = json.load(file)
+
+        self.assertEqual(data["schedule_id"], "ID-KIA-2024")
+        self.assertEqual(len(VACCINE_SCHEDULE_ID), len(data["rules"]))
+        self.assertEqual(VACCINE_SCHEDULE_ID[0].code, data["rules"][0]["code"])
+
     def test_schedule_matches_buku_kia_2024_recommended_ages(self):
         reviewed_schedule = [
             ("HB0", "0-24 jam"),
