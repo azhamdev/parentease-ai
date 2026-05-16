@@ -36,7 +36,7 @@ Status aktual M3:
 PostgreSQL Docker        : tersedia
 Alembic                  : tersedia
 Redis Docker             : tersedia
-Celery app skeleton      : tersedia
+Celery app               : tersedia
 Vaccine schedule tool    : tersedia dan tested
 Vaccine endpoint         : tersedia
 Vaccine history endpoint : tersedia
@@ -45,9 +45,9 @@ Basic red flag handler   : tersedia
 RAG Chroma static PDFs   : tersedia lokal setelah ingest
 Tool call audit table    : tersedia untuk tracking pemanggilan tool
 MCP server               : tersedia untuk calculate_vaccine_schedule, detect_red_flags, search_medical_guidelines, verify_url_source
-Redis/Celery active flow : skeleton tersedia, belum dipakai upload/chat
+Redis/Celery active flow : tersedia untuk async PDF growth upload
 Growth/z-score valid WHO : belum dibuat
-PDF upload               : belum dibuat
+PDF upload               : sync tersedia, async job tersedia via Celery
 ```
 
 Implikasinya: pekerjaan M3 berikutnya sebaiknya fokus ke hardening, auditability, dan foundation yang tidak menabrak M1/M2. Refactor besar ke struktur `src/` tidak direkomendasikan untuk MVP karena repo aktif sudah berjalan dengan struktur `app/`.
@@ -505,7 +505,7 @@ Bisa dikerjakan sekarang tanpa menunggu M1/M2:
 - Pure function `calculate_vaccine_schedule()` beserta test table-driven.
 - Draft Pydantic schemas untuk tool request/response.
 - Draft DB schema dan migration plan.
-- Redis/Celery docker design, tanpa integrasi upload.
+- Redis/Celery async upload job flow.
 - Error response standard.
 - Validator util.
 
@@ -635,7 +635,7 @@ MISTRAL_API_KEY=your_mistral_api_key_here
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/parentease
 ```
 
-- Catatan: kode saat ini masih memakai `OPEN_ROUTER_API_KEY` untuk embedding dan chat model melalui OpenRouter. `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode existing.
+- Catatan: `OPEN_ROUTER_API_KEY` dipakai untuk embedding/chat via OpenRouter. `MISTRAL_API_KEY` dipakai untuk OCR dan parsing PDF growth upload.
 - `DATABASE_URL` default project sekarang mengarah ke PostgreSQL lokal via Docker Compose.
 
 ### Vaccine Schedule Tool
@@ -744,13 +744,13 @@ tests/test_tools_endpoint.py
 - Test yang sudah diverifikasi:
 
 ```bash
-.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py tests/test_upload_jobs.py
 ```
 
 - Hasil terakhir:
 
 ```text
-Ran 39 tests
+Ran 41 tests
 OK
 ```
 
@@ -778,7 +778,7 @@ Session/history         : tersedia dari merge M1, dipakai untuk profil/chat
 Vaccine history         : tersedia via endpoint profile vaccines
 Tool call audit         : tersedia via tabel toolcall
 MCP server              : tersedia via app/mcp_server.py
-Redis/Celery            : skeleton tersedia, belum dipakai flow aktif
+Redis/Celery            : aktif untuk async PDF growth upload
 Alembic migration       : initial schema tersedia
 PostgreSQL              : tersedia via Docker Compose
 ```
@@ -814,7 +814,6 @@ Scope MVP M3 yang sudah dikerjakan:
 
 Scope yang sengaja belum menjadi MVP:
 
-- Redis/Celery worker untuk flow upload/chat aktif.
 - Growth chart/z-score valid WHO.
 - Intent classifier berbasis model khusus.
 
@@ -832,18 +831,16 @@ uv run -m scripts.ingest_pdfs
 make dev
 ```
 
-MCP server dijalankan dari terminal lain:
+Untuk flow async PDF upload dengan worker Celery:
 
 ```bash
-make mcp
+make dev-async
 ```
 
-Frontend React dijalankan dari folder frontend:
+Atau jalankan worker dari terminal lain:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+make worker
 ```
 
 Environment yang dibutuhkan:
@@ -861,7 +858,7 @@ MCP_SERVER_URL=http://localhost:8001
 Catatan saat ini:
 
 - `OPEN_ROUTER_API_KEY` dipakai untuk chat model dan embedding melalui OpenRouter.
-- `MISTRAL_API_KEY` sudah disiapkan, tetapi belum dipakai oleh kode saat ini.
+- `MISTRAL_API_KEY` dipakai untuk OCR dan parsing PDF growth upload.
 - `DATABASE_URL` dibaca oleh app dan Alembic. Untuk local MVP default-nya PostgreSQL Docker.
 - `REDIS_URL` disiapkan untuk Redis session/cache usage.
 - `CELERY_BROKER_URL` dan `CELERY_RESULT_BACKEND` dipakai oleh `app/core/celery_app.py`.
@@ -1446,7 +1443,7 @@ suhu >= 40 C
 demam + kaku leher/kuduk atau ruam ungu
 ```
 
-Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa. Deteksi di chat sekarang memanggil MCP tool `detect_red_flags`, sehingga `make mcp` perlu berjalan untuk guardrail penuh. Jika MCP red flag gagal, chat mengembalikan degraded safety response dan mencatat `toolcall` status `error`.
+Jika red flag terdeteksi, chat langsung mengembalikan safety response dan tidak lanjut ke RAG/LLM biasa. Deteksi di chat sekarang memanggil MCP tool `detect_red_flags`, sehingga MCP server perlu berjalan untuk guardrail penuh (`make dev` sudah menjalankannya, atau pakai `make mcp` jika manual). Jika MCP red flag gagal, chat mengembalikan degraded safety response dan mencatat `toolcall` status `error`.
 
 ### Frontend Contract
 
@@ -1459,12 +1456,72 @@ Frontend tidak perlu memanggil vaccine tool langsung untuk flow chat. Yang wajib
 
 Endpoint tool tetap tersedia untuk debug/admin/test manual.
 
+### Redis + Celery Active Upload Flow
+
+Foundation Redis/Celery sekarang sudah dipakai untuk flow upload PDF growth secara async.
+
+```text
+POST /api/v1/chat/upload-pdf/jobs
+  -> validasi file PDF
+  -> simpan file ke uploads/jobs/{job_id}/
+  -> create row uploadjob status queued
+  -> enqueue Celery task uploads.process_growth_pdf
+  -> return job_id + celery_task_id
+
+Celery worker
+  -> update uploadjob status processing
+  -> run Mistral OCR + growth extraction
+  -> save ToolCall pdf_growth_extract
+  -> save GrowthRecord rows
+  -> save VaccineRecord rows when dated immunization notes are found
+  -> update uploadjob status completed/failed
+
+GET /api/v1/chat/upload-pdf/jobs/{job_id}
+  -> frontend poll status
+  -> status queued/processing/completed/failed
+  -> result berisi summary dan jumlah measurement
+```
+
+Command untuk menjalankan flow async penuh:
+
+```bash
+make dev-async
+```
+
+Atau manual di terminal terpisah:
+
+```bash
+make dev
+make worker
+```
+
+Catatan: frontend aktif sekarang memakai endpoint async. Endpoint sync `POST /api/v1/chat/upload-pdf` masih ada sebagai fallback/manual debug, tetapi bukan jalur utama UI.
+
+Sample testing PDF:
+
+```text
+test_assets/sample_kia_growth_filled.pdf
+```
+
+Sample ini dibuat dari data fiktif, meniru halaman Buku KIA/KMS yang sudah diisi.
+Real-life pages yang relevan dari Buku KIA 2024:
+
+```text
+PDF page 62 : Catatan Pelayanan Kesehatan Anak
+PDF page 63 : Pelayanan Kesehatan Bayi 0-28 Hari
+PDF page 64 : Pelayanan Imunisasi / Imunisasi Dasar Bayi dan Baduta
+PDF page 65 : Pemantauan Pertumbuhan & Perkembangan
+PDF page 67 : Tabel Pertumbuhan Anak 0-2 Tahun
+PDF page 73 : KMS Perempuan 0-2 Tahun
+PDF page 74 : KMS Perempuan 2-5 Tahun
+```
+
 ### Test Plan
 
 Backend tests:
 
 ```bash
-.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py tests/test_upload_jobs.py tests/test_pdf_extraction.py
 ```
 
 Type check spot check:
@@ -1505,7 +1562,7 @@ Yang masih perlu diselesaikan setelah MVP:
 
 - Production/staging PostgreSQL credential management.
 - MCP server tool tambahan dan hardening auth/rate limit.
-- Redis/Celery kalau ingestion/upload dibuat async.
+- Integrasi async upload job ke UI React jika ingin mengganti upload sync.
 - Z-score/growth chart berbasis WHO, bukan placeholder.
 - Intent classifier LLM/model-based jika rule scoring lokal sudah tidak cukup.
 - Pemisahan source type:

@@ -47,6 +47,22 @@ class GrowthMeasurement:
 
 
 @dataclass
+class VaccineExtractionRecord:
+    """A vaccine record extracted from an uploaded child health PDF."""
+
+    vaccine_code: str
+    date_given: str | None = None
+    notes: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "vaccine_code": self.vaccine_code,
+            "date_given": self.date_given,
+            "notes": self.notes,
+        }
+
+
+@dataclass
 class GrowthExtractionResult:
     """Full result of the PDF growth extraction pipeline."""
 
@@ -60,6 +76,7 @@ class GrowthExtractionResult:
     summary: str = ""
     error: str | None = None
     parent_name: str | None = None
+    vaccinations: list[VaccineExtractionRecord] = field(default_factory=list)
 
     def to_tool_string(self) -> str:
         """Serialise for the LLM system prompt."""
@@ -103,10 +120,50 @@ class GrowthExtractionResult:
         else:
             lines.append("No structured growth measurements could be extracted.")
 
+        if self.vaccinations:
+            lines.append(f"Total vaccinations extracted: {len(self.vaccinations)}")
+            lines.append("Vaccination data:")
+            for i, vaccine in enumerate(self.vaccinations, 1):
+                parts = [f"code={vaccine.vaccine_code}"]
+                if vaccine.date_given:
+                    parts.append(f"date={vaccine.date_given}")
+                if vaccine.notes:
+                    parts.append(f"notes={vaccine.notes}")
+                lines.append(f"  {i}. {', '.join(parts)}")
+
         if self.summary:
             lines.append(f"Summary: {self.summary}")
 
         return "\n".join(lines)
+
+
+VACCINE_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("HB0", ("hb0", "hepatitis b", "imunisasi hb")),
+    ("BCG", ("bcg",)),
+    ("OPV1", ("opv1", "opv 1", "polio tetes 1", "polio 1")),
+    ("OPV2", ("opv2", "opv 2", "polio tetes 2", "polio 2")),
+    ("OPV3", ("opv3", "opv 3", "polio tetes 3", "polio 3")),
+    ("OPV4", ("opv4", "opv 4", "polio tetes 4", "polio 4")),
+    ("IPV1", ("ipv1", "ipv 1")),
+    ("IPV2", ("ipv2", "ipv 2")),
+    ("DPT-HB-HIB1", ("dpt-hb-hib 1", "dpt hb hib 1", "dpt-hb-hib1")),
+    ("DPT-HB-HIB2", ("dpt-hb-hib 2", "dpt hb hib 2", "dpt-hb-hib2")),
+    ("DPT-HB-HIB3", ("dpt-hb-hib 3", "dpt hb hib 3", "dpt-hb-hib3")),
+    ("DPT-HB-HIB4", ("dpt-hb-hib 4", "dpt hb hib 4", "dpt-hb-hib4")),
+    ("RV1", ("rv1", "rv 1", "rotavirus 1")),
+    ("RV2", ("rv2", "rv 2", "rotavirus 2")),
+    ("RV3", ("rv3", "rv 3", "rotavirus 3")),
+    ("PCV1", ("pcv1", "pcv 1")),
+    ("PCV2", ("pcv2", "pcv 2")),
+    ("PCV3", ("pcv3", "pcv 3")),
+    ("MR1", ("mr1", "mr 1", "campak rubela 1", "campak rubella 1")),
+    ("MR2", ("mr2", "mr 2", "campak rubela 2", "campak rubella 2")),
+    ("JE", ("je", "japanese encephalitis")),
+)
+
+DATE_PATTERN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +363,68 @@ def extract_growth_from_pdf(
         child_name=parsed.get("child_name"),
         child_birth_date=parsed.get("child_birth_date"),
         child_gender=parsed.get("child_gender"),
+        vaccinations=extract_vaccine_records_from_text(ocr_text),
         summary=parsed.get("summary", ""),
     )
+
+
+def extract_vaccine_records_from_text(text: str) -> list[VaccineExtractionRecord]:
+    """Extract dated vaccine records from OCR text.
+
+    This intentionally only saves records with an explicit date so a blank KIA
+    schedule page is not mistaken for vaccines the child has received.
+    """
+    records: list[VaccineExtractionRecord] = []
+    seen: set[tuple[str, str | None]] = set()
+    for line in text.splitlines():
+        normalized_line = _normalize_text(line)
+        if not normalized_line:
+            continue
+        date_given = _extract_date(normalized_line)
+        if not date_given:
+            continue
+        for vaccine_code, aliases in VACCINE_ALIASES:
+            if any(alias in normalized_line for alias in aliases):
+                key = (vaccine_code, date_given)
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(
+                    VaccineExtractionRecord(
+                        vaccine_code=vaccine_code,
+                        date_given=date_given,
+                        notes=line.strip()[:500] or None,
+                    )
+                )
+                break
+    return records
+
+
+def _extract_date(text: str) -> str | None:
+    match = DATE_PATTERN.search(text)
+    if not match:
+        return None
+    raw_date = match.group(1)
+    if "-" in raw_date and len(raw_date.split("-")[0]) == 4:
+        return raw_date
+
+    separator = "/" if "/" in raw_date else "-"
+    parts = raw_date.split(separator)
+    if len(parts) != 3:
+        return None
+    day, month, year = parts
+    if len(year) == 2:
+        year = f"20{year}"
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return None
+
+
+def _normalize_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9/\-\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _safe_float(val) -> float | None:

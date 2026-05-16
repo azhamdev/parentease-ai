@@ -68,6 +68,25 @@ class GrowthRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class UploadJob(SQLModel, table=True):
+    """Tracks async PDF upload/OCR/ingestion jobs handled by Celery."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: str = Field(index=True, unique=True)
+    session_id: str | None = Field(default=None, index=True)
+    celery_task_id: str | None = Field(default=None, index=True)
+    filename: str
+    content_type: str | None = None
+    file_path: str
+    status: str = Field(default="queued", index=True)
+    message: str | None = None
+    result_payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = None
+
+
 class Document(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     filename: str = Field(index=True)

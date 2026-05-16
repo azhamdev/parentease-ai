@@ -1,17 +1,29 @@
-from datetime import date
+import re
+import uuid
+from datetime import date, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from app.models import ChatMessage, ChildProfile, GrowthRecord, ToolCall, VaccineRecord
+from app.models import (
+    ChatMessage,
+    ChildProfile,
+    GrowthRecord,
+    ToolCall,
+    UploadJob,
+    VaccineRecord,
+)
 from app.database import get_session
 from app.services.agent.streaming import stream_chat_response
+from app.tasks.upload_tasks import process_growth_pdf_upload
 from app.tools.pdf_growth_extract import extract_growth_from_pdf
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+UPLOADS_DIR = Path("uploads/jobs")
 
 
 class ChatRequest(BaseModel):
@@ -114,6 +126,90 @@ async def chat_endpoint_streaming(
 MAX_PDF_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
+@router.post("/upload-pdf/jobs")
+async def create_upload_pdf_job(
+    file: UploadFile = File(...),
+    message: str | None = None,
+    session: Session = Depends(get_session),
+    x_session_id: str | None = Header(None, alias="X-Session-ID"),
+):
+    """
+    Create an async PDF upload/OCR job.
+
+    This is the production-like flow for heavier PDF work:
+    upload -> persist file/job -> enqueue Celery -> frontend polls job status.
+    """
+    pdf_bytes = await _validate_and_read_pdf(file)
+    job_id = str(uuid.uuid4())
+    safe_filename = _safe_filename(file.filename or "upload.pdf")
+    job_dir = UPLOADS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    file_path = job_dir / safe_filename
+    file_path.write_bytes(pdf_bytes)
+
+    job = UploadJob(
+        job_id=job_id,
+        session_id=x_session_id,
+        filename=safe_filename,
+        content_type=file.content_type,
+        file_path=str(file_path),
+        status="queued",
+        message="PDF sudah diterima dan masuk antrean pemrosesan.",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    celery_result = process_growth_pdf_upload.delay(
+        job_id=job_id,
+        file_path=str(file_path),
+        filename=safe_filename,
+        session_id=x_session_id,
+        message=message,
+    )
+
+    job.celery_task_id = celery_result.id
+    job.updated_at = datetime.utcnow()
+    session.add(job)
+    session.commit()
+
+    return {
+        "job_id": job_id,
+        "celery_task_id": celery_result.id,
+        "status": job.status,
+        "message": job.message,
+        "filename": job.filename,
+    }
+
+
+@router.get("/upload-pdf/jobs/{job_id}")
+async def get_upload_pdf_job(
+    job_id: str,
+    session: Session = Depends(get_session),
+    x_session_id: str | None = Header(None, alias="X-Session-ID"),
+):
+    stmt = select(UploadJob).where(UploadJob.job_id == job_id)
+    if x_session_id:
+        stmt = stmt.where(UploadJob.session_id == x_session_id)
+    job = session.exec(stmt).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Upload job not found.")
+
+    return {
+        "job_id": job.job_id,
+        "session_id": job.session_id,
+        "celery_task_id": job.celery_task_id,
+        "filename": job.filename,
+        "status": job.status,
+        "message": job.message,
+        "result": job.result_payload,
+        "error": job.error_message,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
 @router.post("/upload-pdf")
 async def upload_pdf_growth(
     file: UploadFile = File(...),
@@ -131,15 +227,7 @@ async def upload_pdf_growth(
     - **message**: Optional user message to accompany the upload
     - **x_session_id**: Session ID from header
     """
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-
-    pdf_bytes = await file.read()
-    if len(pdf_bytes) > MAX_PDF_SIZE:
-        raise HTTPException(status_code=400, detail="PDF exceeds 20 MB limit.")
-
-    if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    pdf_bytes = await _validate_and_read_pdf(file)
 
     # Save user message about upload
     user_text = message or f"[Upload PDF: {file.filename}]"
@@ -163,6 +251,7 @@ async def upload_pdf_growth(
                 "success": result.success,
                 "child_name": result.child_name,
                 "measurement_count": len(result.measurements),
+                "vaccine_count": len(result.vaccinations),
                 "summary": result.summary,
                 "error": result.error,
             }
@@ -201,6 +290,13 @@ async def upload_pdf_growth(
                 }
             )
         session.commit()
+
+    _save_extracted_vaccine_records(
+        session=session,
+        session_id=x_session_id,
+        filename=file.filename,
+        result=result,
+    )
 
     # Fetch child data for the streaming response
     child_data = None
@@ -286,6 +382,42 @@ def _build_agent_message(filename: str, user_text: str, result) -> str:
     return "\n".join(parts)
 
 
+def _save_extracted_vaccine_records(
+    *,
+    session: Session,
+    session_id: str | None,
+    filename: str | None,
+    result,
+) -> int:
+    if not session_id or not result.success or not result.vaccinations:
+        return 0
+
+    saved = 0
+    for vaccine in result.vaccinations:
+        date_given = _parse_date_safe(vaccine.date_given)
+        existing = session.exec(
+            select(VaccineRecord).where(
+                VaccineRecord.session_id == session_id,
+                VaccineRecord.vaccine_code == vaccine.vaccine_code,
+                VaccineRecord.date_given == date_given,
+            )
+        ).first()
+        if existing:
+            continue
+        session.add(
+            VaccineRecord(
+                session_id=session_id,
+                vaccine_code=vaccine.vaccine_code,
+                date_given=date_given,
+                notes=vaccine.notes or f"Extracted from {filename or 'uploaded PDF'}",
+            )
+        )
+        saved += 1
+    if saved:
+        session.commit()
+    return saved
+
+
 def _parse_date_safe(date_str: str | None) -> date | None:
     """Parse a date string safely, returning None on failure."""
     if not date_str:
@@ -294,3 +426,23 @@ def _parse_date_safe(date_str: str | None) -> date | None:
         return date.fromisoformat(date_str)
     except (ValueError, TypeError):
         return None
+
+
+async def _validate_and_read_pdf(file: UploadFile) -> bytes:
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > MAX_PDF_SIZE:
+        raise HTTPException(status_code=400, detail="PDF exceeds 20 MB limit.")
+
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    return pdf_bytes
+
+
+def _safe_filename(filename: str) -> str:
+    filename = Path(filename).name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    return cleaned or "upload.pdf"

@@ -85,6 +85,7 @@ uploads/
 downloads/
 *.pdf
 !data/asi_guidelines.pdf  # Keep this if it's essential
+!test_assets/*.pdf
 
 # ==================================
 # Testing & Coverage

@@ -16,6 +16,7 @@ celery_app = Celery(
     "parentease",
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
+    include=["app.tasks.upload_tasks"],
 )
 
 celery_app.conf.update(

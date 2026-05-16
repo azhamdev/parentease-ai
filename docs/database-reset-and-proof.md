@@ -71,7 +71,7 @@ uv run alembic current
 Expected:
 
 ```text
-20260515_0004 (head)
+20260516_0005 (head)
 ```
 
 Proof via `psql`:
@@ -96,6 +96,7 @@ childprofile
 document
 growthrecord
 toolcall
+uploadjob
 vaccinerecord
 ```
 
@@ -112,6 +113,18 @@ Expected:
 PONG
 transport: redis://localhost:6379/1
 results: redis://localhost:6379/2
+```
+
+Async upload worker proof:
+
+```bash
+make worker
+```
+
+Expected worker task list contains:
+
+```text
+uploads.process_growth_pdf
 ```
 
 ## 3. Ingest Chroma Knowledge Base
@@ -828,18 +841,134 @@ Berat normal -> guidelines = True, growth = True
 Main bola / JavaScript -> all false
 ```
 
-## 13. Automated Verification
+## 13. Scenario I: Async PDF Upload Job
 
-Run backend tests:
+Frontend upload PDF sekarang memakai jalur async job. Run the full async stack:
 
 ```bash
-.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py
+make dev-async
+```
+
+Or run manually in separate terminals:
+
+```bash
+make dev
+make worker
+```
+
+Create async upload job from UI or curl:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/chat/upload-pdf/jobs \
+  -H "X-Session-ID: {SESSION_ID}" \
+  -F "file=@test_assets/sample_kia_growth_filled.pdf" \
+  -F "message=Tolong proses data tumbuh kembang ini"
+```
+
+Expected response:
+
+```json
+{
+  "job_id": "...",
+  "celery_task_id": "...",
+  "status": "queued",
+  "message": "PDF sudah diterima dan masuk antrean pemrosesan.",
+  "filename": "growth-document.pdf"
+}
+```
+
+Poll status:
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/chat/upload-pdf/jobs/{JOB_ID} \
+  -H "X-Session-ID: {SESSION_ID}"
+```
+
+Expected status flow:
+
+```text
+queued -> processing -> completed
+```
+
+Frontend expected:
+
+```text
+Saat upload, chat menampilkan Job ID dan status.
+Setelah completed, chat menampilkan jumlah data pertumbuhan dan catatan imunisasi yang tersimpan.
+```
+
+PostgreSQL proof:
+
+```sql
+select job_id, session_id, celery_task_id, filename, status, result_payload, error_message
+from uploadjob
+order by created_at desc
+limit 5;
+
+select session_id, source_filename, age_months, weight_kg, height_cm, head_circumference_cm
+from growthrecord
+where session_id = '{SESSION_ID}'
+order by created_at desc;
+
+select session_id, tool_name, status, input_payload, output_payload
+from toolcall
+where session_id = '{SESSION_ID}' and tool_name = 'pdf_growth_extract'
+order by created_at desc;
 ```
 
 Expected:
 
 ```text
-Ran 39 tests
+uploadjob.status = completed
+toolcall.tool_name = pdf_growth_extract
+growthrecord has extracted measurements if OCR found growth data
+vaccinerecord has dated immunization records if OCR found vaccine notes
+```
+
+If status becomes `failed`, check:
+
+```text
+uploadjob.error_message
+worker terminal traceback
+MISTRAL_API_KEY in .env
+```
+
+Sample PDF:
+
+```text
+test_assets/sample_kia_growth_filled.pdf
+test_assets/sample_buku_kia_filled_pages.pdf
+```
+
+These files are synthetic and contain filled KIA-style growth rows plus dated
+immunization notes. They are safe for local testing because they are not real
+patient data. Use `sample_buku_kia_filled_pages.pdf` for the closest multi-page
+Buku KIA scenario.
+
+Relevant Buku KIA source pages used as reference for real-life uploads:
+
+```text
+PDF page 62 : Catatan Pelayanan Kesehatan Anak
+PDF page 63 : Pelayanan Kesehatan Bayi 0-28 Hari, including HB notes
+PDF page 64 : Pelayanan Imunisasi / Imunisasi Dasar Bayi dan Baduta
+PDF page 65 : Pemantauan Pertumbuhan & Perkembangan
+PDF page 67 : Tabel Pertumbuhan Anak 0-2 Tahun
+PDF page 73 : KMS Perempuan 0-2 Tahun
+PDF page 74 : KMS Perempuan 2-5 Tahun
+```
+
+## 14. Automated Verification
+
+Run backend tests:
+
+```bash
+.venv/bin/python -m unittest tests/test_intent_detection.py tests/test_red_flags.py tests/test_mcp_server.py tests/test_mcp_client.py tests/test_tools_endpoint.py tests/test_upload_jobs.py tests/test_pdf_extraction.py
+```
+
+Expected:
+
+```text
+Ran 43 tests
 OK
 ```
 
@@ -852,10 +981,10 @@ uv run alembic current
 Expected:
 
 ```text
-20260515_0004 (head)
+20260516_0005 (head)
 ```
 
-## 14. Cleanup After Testing
+## 15. Cleanup After Testing
 
 Stop services without deleting data:
 

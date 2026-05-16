@@ -72,6 +72,12 @@ React UI    : http://localhost:5173
 
 Use the React UI at `http://localhost:5173` for the active MVP frontend.
 
+Run the full stack with a Celery worker for async PDF upload/OCR jobs:
+
+```bash
+make dev-async
+```
+
 Backend-only mode:
 
 ```bash
@@ -156,7 +162,7 @@ docker compose ps postgres
 Expected Alembic version:
 
 ```text
-20260515_0004 (head)
+20260516_0005 (head)
 ```
 
 `parentease.db` is an old/local SQLite file and is not used when `DATABASE_URL` points to PostgreSQL.
@@ -177,7 +183,7 @@ http://localhost:5173
 
 ## Redis + Celery
 
-Redis is available through Docker Compose. Celery is configured as an M3 foundation for future async upload processing and async tool execution.
+Redis is available through Docker Compose. Celery is used for async PDF growth upload/OCR jobs and remains available for future async tool execution.
 
 Start Redis:
 
@@ -198,4 +204,19 @@ Send a health task from another terminal:
 make celery-health
 ```
 
-Current note: Celery is a skeleton foundation. The active chat/upload MVP flow does not depend on Celery yet.
+Async upload endpoints:
+
+```text
+POST /api/v1/chat/upload-pdf/jobs
+GET  /api/v1/chat/upload-pdf/jobs/{job_id}
+```
+
+The React UI uses the async upload job flow. The older synchronous
+`POST /api/v1/chat/upload-pdf` endpoint remains available for manual debugging.
+
+Synthetic upload test PDF:
+
+```text
+test_assets/sample_kia_growth_filled.pdf
+test_assets/sample_buku_kia_filled_pages.pdf
+```

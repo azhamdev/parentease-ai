@@ -237,7 +237,7 @@ export const uploadPDF = async (sessionId, file, message, onChunk) => {
   formData.append("file", file);
   if (message) formData.append("message", message);
 
-  const res = await fetch(`${API_URL}/chat/upload-pdf`, {
+  const res = await fetch(`${API_URL}/chat/upload-pdf/jobs`, {
     method: "POST",
     headers: { "X-Session-ID": sessionId },
     body: formData,
@@ -247,63 +247,86 @@ export const uploadPDF = async (sessionId, file, message, onChunk) => {
     throw new Error(errData.detail || `Upload failed: HTTP ${res.status}`);
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let fullResponse = "";
-  let sources = [];
-  let lastChar = "";
+  const job = await res.json();
+  onChunk("PDF sedang diproses. Mohon tunggu sebentar.\n");
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  const startedAt = Date.now();
+  let lastStatus = job.status;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop();
+  while (Date.now() - startedAt < 120000) {
+    await sleep(2000);
+    const status = await getUploadPDFJob(sessionId, job.job_id);
 
-    for (const line of lines) {
-      if (line === "") continue;
+    if (status.status !== lastStatus) {
+      lastStatus = status.status;
+      onChunk(`\n${formatUploadJobStatus(status.status)}\n`);
+    }
 
-      let data = "";
-      if (line.startsWith("data: ")) {
-        data = line.slice(6);
-      } else {
-        data = line;
-      }
-      if (data === "") continue;
+    if (status.status === "completed") {
+      return {
+        response: formatUploadJobResult(status),
+        sources: [],
+        job,
+      };
+    }
 
-      const clean = data.trim();
-      if (clean === "[DONE]") break;
-      if (clean.startsWith("[ERROR]")) throw new Error(clean.slice(9));
-      if (clean.startsWith("[SOURCES]")) {
-        try { sources = JSON.parse(clean.replace(/^\[SOURCES\]\s*/, "")); } catch { sources = []; }
-        continue;
-      }
-
-      if (lastChar && /[!.,:;]/.test(lastChar) && data && !data.startsWith(" ") && !data.startsWith("\n")) {
-        fullResponse += " ";
-        onChunk(" ");
-      }
-
-      fullResponse += data;
-      onChunk(data);
-
-      if (data) {
-        lastChar = data[data.length - 1];
-      }
+    if (status.status === "failed") {
+      throw new Error(status.error || "PDF gagal diproses.");
     }
   }
 
-  const inlineSourcesMatch = fullResponse.match(/\[SOURCES\]\s*(\[[\s\S]*?\])/);
-  if (inlineSourcesMatch) {
-    try {
-      sources = JSON.parse(inlineSourcesMatch[1]);
-      fullResponse = fullResponse.replace(/\[SOURCES\]\s*\[[\s\S]*?\]/, "").trim();
-    } catch {
-      sources = [];
-    }
+  return {
+    response:
+      "PDF sudah masuk antrean, tetapi belum selesai diproses. Coba cek lagi beberapa saat lagi atau lihat status job di backend.",
+    sources: [],
+    job,
+  };
+};
+
+export const getUploadPDFJob = async (sessionId, jobId) => {
+  const res = await fetch(`${API_URL}/chat/upload-pdf/jobs/${jobId}`, {
+    method: "GET",
+    headers: { "X-Session-ID": sessionId },
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || `Failed to get upload job: HTTP ${res.status}`);
   }
 
-  return { response: fullResponse, sources };
+  return res.json();
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const formatUploadJobStatus = (status) => {
+  if (status === "queued") return "PDF menunggu giliran untuk diproses.";
+  if (status === "processing") return "Sedang membaca isi PDF dan mengambil data penting.";
+  if (status === "completed") return "PDF selesai diproses.";
+  if (status === "failed") return "PDF gagal diproses.";
+  return `Status pemrosesan: ${status}`;
+};
+
+const formatUploadJobResult = (status) => {
+  const result = status.result || {};
+  const lines = [
+    "PDF selesai diproses.",
+    "",
+    `File: ${status.filename}`,
+    `Data pertumbuhan terdeteksi: ${result.measurement_count ?? 0}`,
+    `Data pertumbuhan baru tersimpan: ${result.saved_growth_count ?? 0}`,
+    `Catatan imunisasi terdeteksi: ${result.vaccine_count ?? 0}`,
+    `Catatan imunisasi baru tersimpan: ${result.saved_vaccine_count ?? 0}`,
+  ];
+
+  if (result.summary) {
+    lines.push("", `Ringkasan: ${result.summary}`);
+  }
+
+  lines.push(
+    "",
+    "Data dari PDF ini sudah tersimpan. Parent bisa lanjut bertanya tentang pertumbuhan anak atau jadwal vaksin berdasarkan data tersebut."
+  );
+
+  return lines.join("\n");
 };
