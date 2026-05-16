@@ -26,6 +26,7 @@ class McpServerTest(unittest.TestCase):
         self.assertIn("result", data)
         tool_names = {tool["name"] for tool in data["result"]["tools"]}
         self.assertIn("calculate_vaccine_schedule", tool_names)
+        self.assertIn("detect_red_flags", tool_names)
 
     def test_calculate_vaccine_schedule_tool_call(self):
         response = self.client.post(
@@ -87,6 +88,88 @@ class McpServerTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["error"]["code"], -32601)
+
+    def test_unknown_method_returns_jsonrpc_error(self):
+        response = self.client.post(
+            "/rpc",
+            json={"jsonrpc": "2.0", "id": "5", "method": "unknown/method"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32601)
+
+    def test_invalid_tool_arguments_return_jsonrpc_error(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "6",
+                "method": "tools/call",
+                "params": {
+                    "name": "calculate_vaccine_schedule",
+                    "arguments": {"birth_date": "not-a-date"},
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
+
+    def test_missing_tool_name_returns_jsonrpc_error(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "7",
+                "method": "tools/call",
+                "params": {"arguments": {}},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
+
+    def test_detect_red_flags_tool_call(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "8",
+                "method": "tools/call",
+                "params": {
+                    "name": "detect_red_flags",
+                    "arguments": {
+                        "message": "Bayi saya demam 39 dan usianya 2 bulan",
+                        "child_context": {"age_months": 2},
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        self.assertEqual(result["tool_name"], "detect_red_flags")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["is_red_flag"])
+        self.assertTrue(result["reasons"])
+        self.assertEqual(result["sources"][0]["type"], "red_flag_rule")
+
+    def test_detect_red_flags_requires_message(self):
+        response = self.client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "9",
+                "method": "tools/call",
+                "params": {
+                    "name": "detect_red_flags",
+                    "arguments": {"child_context": {"age_months": 2}},
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["error"]["code"], -32602)
 
 
 if __name__ == "__main__":

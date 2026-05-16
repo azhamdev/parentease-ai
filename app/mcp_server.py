@@ -5,11 +5,16 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, ValidationError
 
+from app.tools.red_flags import detect_red_flags
 from app.tools.schemas import VaccineScheduleRequest
 from app.tools.vaccine_schedule import calculate_vaccine_schedule
 
 
 app = FastAPI(title="ParentEase MCP Tool Server")
+
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_METHOD_NOT_FOUND = -32601
+JSONRPC_INVALID_PARAMS = -32602
 
 
 class JsonRpcRequest(BaseModel):
@@ -46,19 +51,22 @@ def rpc(payload: JsonRpcRequest) -> dict:
     if payload.jsonrpc != "2.0":
         return _jsonrpc_error(
             payload.id,
-            code=-32600,
+            code=JSONRPC_INVALID_REQUEST,
             message="Invalid JSON-RPC version.",
         )
 
     if payload.method == "tools/list":
-        return _jsonrpc_result(payload.id, {"tools": [_vaccine_schedule_tool_schema()]})
+        return _jsonrpc_result(
+            payload.id,
+            {"tools": [_vaccine_schedule_tool_schema(), _red_flags_tool_schema()]},
+        )
 
     if payload.method == "tools/call":
         return _handle_tool_call(payload)
 
     return _jsonrpc_error(
         payload.id,
-        code=-32601,
+        code=JSONRPC_METHOD_NOT_FOUND,
         message=f"Method '{payload.method}' is not supported.",
     )
 
@@ -67,13 +75,37 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
     tool_name = payload.params.get("name")
     arguments = payload.params.get("arguments") or {}
 
-    if tool_name != "calculate_vaccine_schedule":
+    if not isinstance(tool_name, str) or not tool_name:
         return _jsonrpc_error(
             payload.id,
-            code=-32601,
-            message=f"Tool '{tool_name}' is not supported.",
+            code=JSONRPC_INVALID_PARAMS,
+            message="Tool name is required.",
         )
 
+    if not isinstance(arguments, dict):
+        return _jsonrpc_error(
+            payload.id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Tool arguments must be an object.",
+        )
+
+    if tool_name == "calculate_vaccine_schedule":
+        return _handle_vaccine_schedule_tool(payload.id, arguments)
+
+    if tool_name == "detect_red_flags":
+        return _handle_red_flags_tool(payload.id, arguments)
+
+    return _jsonrpc_error(
+        payload.id,
+        code=JSONRPC_METHOD_NOT_FOUND,
+        message=f"Tool '{tool_name}' is not supported.",
+    )
+
+
+def _handle_vaccine_schedule_tool(
+    request_id: str | int | None,
+    arguments: dict[str, Any],
+) -> dict:
     try:
         request = VaccineScheduleRequest.model_validate(
             _normalize_vaccine_arguments(arguments)
@@ -81,13 +113,58 @@ def _handle_tool_call(payload: JsonRpcRequest) -> dict:
         result = calculate_vaccine_schedule(request)
     except ValidationError as exc:
         return _jsonrpc_error(
-            payload.id,
-            code=-32602,
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
             message="Invalid tool arguments.",
             data=exc.errors(),
         )
 
-    return _jsonrpc_result(payload.id, result.model_dump(mode="json"))
+    return _jsonrpc_result(request_id, result.model_dump(mode="json"))
+
+
+def _handle_red_flags_tool(
+    request_id: str | int | None,
+    arguments: dict[str, Any],
+) -> dict:
+    message = arguments.get("message")
+    child_context = arguments.get("child_context")
+
+    if not isinstance(message, str) or not message.strip():
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'message' is required.",
+        )
+
+    if child_context is not None and not isinstance(child_context, dict):
+        return _jsonrpc_error(
+            request_id,
+            code=JSONRPC_INVALID_PARAMS,
+            message="Argument 'child_context' must be an object.",
+        )
+
+    result = detect_red_flags(message, child_context)
+    sources = []
+    if result.is_red_flag:
+        sources.append(
+            {
+                "type": "red_flag_rule",
+                "source_id": "PARENTEASE_RED_FLAG_RULES",
+                "title": "ParentEase red flag triage rules",
+            }
+        )
+
+    return _jsonrpc_result(
+        request_id,
+        {
+            "tool_name": "detect_red_flags",
+            "status": "ok",
+            "is_red_flag": result.is_red_flag,
+            "reasons": result.reasons,
+            "action": result.action,
+            "sources": sources,
+        },
+    )
 
 
 def _normalize_vaccine_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -141,5 +218,30 @@ def _vaccine_schedule_tool_schema() -> dict:
                 },
             },
             "required": ["birth_date"],
+        },
+    }
+
+
+def _red_flags_tool_schema() -> dict:
+    return {
+        "name": "detect_red_flags",
+        "description": "Deteksi tanda bahaya medis pada pesan user dan konteks anak.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Pesan user yang perlu dicek tanda bahaya.",
+                },
+                "child_context": {
+                    "type": "object",
+                    "description": "Konteks anak opsional, misalnya age_months atau birth_date.",
+                    "properties": {
+                        "age_months": {"type": "integer"},
+                        "birth_date": {"type": "string"},
+                    },
+                },
+            },
+            "required": ["message"],
         },
     }

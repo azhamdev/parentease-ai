@@ -1,6 +1,5 @@
 import os
 import json
-import httpx
 from typing import AsyncGenerator, Callable, cast
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
@@ -8,9 +7,7 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 import chromadb
 
-from app.tools.schemas import VaccineScheduleRequest
-from app.tools.vaccine_schedule import calculate_vaccine_schedule
-from app.tools.red_flags import detect_red_flags
+from app.services.agent.mcp_client import get_mcp_client
 
 from app.utils.langfuse_logger import langfuse_client
 from langfuse import observe, propagate_attributes
@@ -18,37 +15,9 @@ from langfuse.openai import openai as langfuse_openai
 
 # --- ✅ MCP CLIENT SETUP ---
 async def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
-    """
-    Memanggil MCP Server (M3) untuk eksekusi tool.
-    """
-    mcp_url = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
-
-    # Payload standar JSON-RPC 2.0
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments
-        }
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            print(f"🔌 Calling MCP Server: {mcp_url}/rpc -> {tool_name}")
-            response = await client.post(f"{mcp_url}/rpc", json=payload)
-            response.raise_for_status()
-            result = response.json()
-
-            if "error" in result:
-                raise Exception(result["error"].get("message", "MCP Server Error"))
-
-            return result.get("result", {})
-        except httpx.HTTPStatusError as e:
-            raise Exception(f"MCP HTTP Error: {e.response.status_code}")
-        except Exception as e:
-            raise Exception(f"MCP Connection Failed: {str(e)}")
+    """Memanggil MCP Server M3 lewat MCP client milik M1."""
+    client = await get_mcp_client()
+    return await client.call_tool(tool_name, arguments)
 
 # --- OPENAI CLIENTS ---
 def get_async_client():
@@ -143,27 +112,64 @@ def _unique_sources(sources: list[dict]) -> list[dict]:
     return unique_sources
 
 @observe()
-def _format_vaccine_schedule_result(result) -> str:
-    def item_lines(title: str, items: list) -> list[str]:
+def _format_vaccine_schedule_dict(result: dict) -> str:
+    def item_lines(title: str, items: list[dict]) -> list[str]:
         if not items:
             return [f"{title}: tidak ada."]
         lines = [f"{title}:"]
         for item in items:
-            lines.append(f"- {item.label} ({item.due_age_label})")
+            label = item.get("label", item.get("vaccine_code", "-"))
+            due_age_label = item.get("due_age_label", "-")
+            lines.append(f"- {label} ({due_age_label})")
         return lines
 
     lines = [
-        f"Status: {result.status}",
-        f"Usia anak: {result.age_months} bulan ({result.age_days} hari)",
-        *item_lines("Sudah tercatat diberikan", result.completed),
-        *item_lines("Jatuh tempo sekarang", result.due_now),
-        *item_lines("Terlambat/overdue", result.overdue),
-        *item_lines("Akan datang", result.upcoming[:6]),
+        f"Status: {result.get('status')}",
+        (
+            f"Usia anak: {result.get('age_months')} bulan "
+            f"({result.get('age_days')} hari)"
+        ),
+        *item_lines("Sudah tercatat diberikan", result.get("completed", [])),
+        *item_lines("Jatuh tempo sekarang", result.get("due_now", [])),
+        *item_lines("Terlambat/overdue", result.get("overdue", [])),
+        *item_lines("Akan datang", result.get("upcoming", [])[:6]),
     ]
-    if result.warnings:
+    warnings = result.get("warnings", [])
+    if warnings:
         lines.append("Catatan:")
-        lines.extend(f"- {warning}" for warning in result.warnings)
+        lines.extend(f"- {warning}" for warning in warnings)
     return "\n".join(lines)
+
+
+def _format_red_flag_response(red_flag_result: dict) -> str:
+    reasons = red_flag_result.get("reasons") or [
+        "Ada tanda bahaya yang perlu dinilai tenaga kesehatan."
+    ]
+    action = red_flag_result.get(
+        "action",
+        "Segera bawa anak ke IGD atau fasilitas kesehatan terdekat.",
+    )
+    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
+    return (
+        "Parent, dari cerita Anda ada tanda bahaya yang perlu ditangani segera.\n\n"
+        f"{reason_lines}\n\n"
+        f"**Tindakan:** {action}\n\n"
+        "Saya tidak bisa memastikan diagnosis lewat chat, tetapi kondisi seperti ini "
+        "lebih aman diperiksa langsung oleh tenaga kesehatan."
+    )
+
+
+def _format_red_flag_unavailable_response(error: Exception) -> str:
+    print(f"⚠️ Red flag MCP error: {error}")
+    return (
+        "Parent, saya belum bisa mengecek tanda bahaya secara otomatis saat ini.\n\n"
+        "Kalau anak mengalami gejala berat seperti demam tinggi pada bayi kecil, kejang, "
+        "sesak napas, bibir kebiruan, sangat lemas, tidak sadar, tidak mau minum/menyusu, "
+        "atau tanda dehidrasi, segera bawa ke IGD atau fasilitas kesehatan terdekat.\n\n"
+        "Untuk kondisi yang terasa mengkhawatirkan, lebih aman diperiksa langsung oleh "
+        "tenaga kesehatan."
+    )
+
 
 # --- MAIN STREAMING FUNCTION ---
 @observe()
@@ -289,16 +295,46 @@ async def stream_chat_response(
             if child_context.get('height_cm'):
                 base_prompt += f"- Tinggi: {child_context['height_cm']} cm\n "
 
-        red_flag = detect_red_flags(user_message, child_context)
-        if red_flag.is_red_flag:
-            reasons = "\n".join(f"- {reason}" for reason in red_flag.reasons)
-            yield (
-                "Parent, dari cerita Anda ada tanda bahaya yang perlu ditangani segera.\n\n"
-                f"{reasons}\n\n"
-                f"**Tindakan:** {red_flag.action}\n\n"
-                "Saya tidak bisa memastikan diagnosis lewat chat, tetapi kondisi seperti ini "
-                "lebih aman diperiksa langsung oleh tenaga kesehatan."
+        try:
+            red_flag = await call_mcp_tool(
+                "detect_red_flags",
+                {
+                    "message": user_message,
+                    "child_context": child_context or {},
+                },
             )
+        except Exception as red_flag_err:
+            if tool_audit_callback:
+                tool_audit_callback(
+                    {
+                        "tool_name": "detect_red_flags",
+                        "status": "error",
+                        "input_payload": {
+                            "message": user_message,
+                            "child_context": child_context or {},
+                        },
+                        "output_payload": {"error": str(red_flag_err)},
+                        "sources": [],
+                    }
+                )
+            yield _format_red_flag_unavailable_response(red_flag_err)
+            return
+
+        if red_flag.get("is_red_flag"):
+            if tool_audit_callback:
+                tool_audit_callback(
+                    {
+                        "tool_name": red_flag.get("tool_name", "detect_red_flags"),
+                        "status": red_flag.get("status", "ok"),
+                        "input_payload": {
+                            "message": user_message,
+                            "child_context": child_context or {},
+                        },
+                        "output_payload": red_flag,
+                        "sources": red_flag.get("sources", []),
+                    }
+                )
+            yield _format_red_flag_response(red_flag)
             return
 
         retrieved_sources: list[dict] = []
@@ -326,47 +362,76 @@ async def stream_chat_response(
                     completed_vaccines = vaccine_child_context.get("completed_vaccines", [])
                     if not isinstance(completed_vaccines, list):
                         completed_vaccines = []
-                    vaccine_result = calculate_vaccine_schedule(
-                        VaccineScheduleRequest(
-                            birth_date=parsed_birth_date,
-                            as_of_date=today,
-                            completed_vaccines=completed_vaccines,
-                        )
+                    vaccine_input = {
+                        "birth_date": parsed_birth_date.isoformat(),
+                        "as_of_date": today.isoformat(),
+                        "completed_vaccines": completed_vaccines,
+                    }
+                    vaccine_result = await call_mcp_tool(
+                        "calculate_vaccine_schedule",
+                        vaccine_input,
                     )
                     if tool_audit_callback:
                         tool_audit_callback(
                             {
-                                "tool_name": vaccine_result.tool_name,
-                                "status": vaccine_result.status,
-                                "input_payload": {
-                                    "birth_date": parsed_birth_date.isoformat(),
-                                    "as_of_date": today.isoformat(),
-                                    "completed_vaccines": completed_vaccines,
-                                },
-                                "output_payload": vaccine_result.model_dump(mode="json"),
-                                "sources": [
-                                    source.model_dump(mode="json")
-                                    for source in vaccine_result.sources
-                                ],
+                                "tool_name": vaccine_result.get(
+                                    "tool_name",
+                                    "calculate_vaccine_schedule",
+                                ),
+                                "status": vaccine_result.get("status", "ok"),
+                                "input_payload": vaccine_input,
+                                "output_payload": vaccine_result,
+                                "sources": vaccine_result.get("sources", []),
                             }
                         )
-                    print("💉 Calculated vaccine schedule from child profile")
+                    print("💉 Calculated vaccine schedule via MCP")
                     base_prompt += (
                         "\n\n💉 HASIL TOOL calculate_vaccine_schedule:\n"
-                        f"{_format_vaccine_schedule_result(vaccine_result)}\n\n"
+                        f"{_format_vaccine_schedule_dict(vaccine_result)}\n\n"
                         "Jika user bertanya jadwal vaksin, gunakan hasil tool ini sebagai jawaban utama. "
                         "Jelaskan bahwa jadwal bergantung pada riwayat vaksin yang sudah diterima."
                     )
-                    retrieved_sources.extend(
-                        source.model_dump() for source in vaccine_result.sources
-                    )
+                    retrieved_sources.extend(vaccine_result.get("sources", []))
                 except Exception as vaccine_err:
                     print(f"⚠️ Vaccine schedule error: {vaccine_err}")
+                    if tool_audit_callback:
+                        tool_audit_callback(
+                            {
+                                "tool_name": "calculate_vaccine_schedule",
+                                "status": "error",
+                                "input_payload": {
+                                    "birth_date": str(birth_date),
+                                    "as_of_date": today.isoformat(),
+                                    "completed_vaccines": (
+                                        vaccine_child_context.get(
+                                            "completed_vaccines",
+                                            [],
+                                        )
+                                    ),
+                                },
+                                "output_payload": {"error": str(vaccine_err)},
+                                "sources": [],
+                            }
+                        )
+                    base_prompt += (
+                        "\n\n💉 CATATAN TOOL VAKSIN:\n"
+                        "User bertanya tentang vaksin, tetapi MCP tool server sedang tidak tersedia "
+                        "atau gagal mengembalikan hasil. Jelaskan bahwa fitur jadwal vaksin personal "
+                        "sedang tidak tersedia sementara, lalu berikan informasi umum berbasis sumber "
+                        "yang tersedia tanpa mengarang jadwal personal."
+                    )
             else:
                 base_prompt += (
                     "\n\n💉 CATATAN TOOL VAKSIN:\n"
-                    "User bertanya tentang vaksin, tetapi tanggal lahir anak belum tersedia. "
-                    "Minta tanggal lahir anak sebelum menghitung jadwal vaksin personal."
+                    "User bertanya tentang jadwal vaksin, tetapi tanggal lahir anak belum tersedia. "
+                    "Jangan menghitung atau menebak jadwal vaksin personal. Jawab dengan bahasa yang "
+                    "ramah dan mudah dipahami: sampaikan bahwa jadwal vaksin bisa dibuat lebih akurat "
+                    "kalau tanggal lahir anak sudah diisi. Minta user mengisi atau memperbarui data anak "
+                    "terlebih dahulu, terutama tanggal lahir. Jika sesuai, arahkan user untuk memakai "
+                    "tombol Edit Data Anak Saya. Tetap jawab kebutuhan user dengan informasi umum dari "
+                    "KONTEKS DARI KNOWLEDGE BASE jika tersedia, misalnya gambaran bahwa jadwal imunisasi "
+                    "mengikuti usia bayi. Tegaskan bahwa itu informasi umum, bukan jadwal personal. Jadwal "
+                    "personal baru bisa dihitung setelah tanggal lahir tersedia."
                 )
 
         messages: list[ChatCompletionMessageParam] = [
