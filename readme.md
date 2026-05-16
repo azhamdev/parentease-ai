@@ -78,6 +78,10 @@ Run the full stack with a Celery worker for async PDF upload/OCR jobs:
 make dev-async
 ```
 
+Use `make dev-async` when testing PDF upload from the React UI. `make dev`
+starts the API, MCP server, and React UI, but does not start the Celery worker,
+so async upload jobs can stay queued until a worker is running.
+
 Backend-only mode:
 
 ```bash
