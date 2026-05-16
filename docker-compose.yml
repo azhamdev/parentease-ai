@@ -73,7 +73,7 @@ services:
     restart: unless-stopped
     command:
       [
-        'uvicorn',
+        '/app/.venv/bin/uvicorn',
         'app.mcp_server:app',
         '--host',
         '0.0.0.0',
