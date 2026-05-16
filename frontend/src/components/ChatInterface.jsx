@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Bot, Edit3, BookOpen, ExternalLink, Loader2 } from 'lucide-react';
-import { sendMessage, getMessages } from '../services/api';
+import { Send, Bot, Edit3, BookOpen, ExternalLink, Loader2, Paperclip, FileText, X } from 'lucide-react';
+import { sendMessage, getMessages, uploadPDF } from '../services/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -21,9 +21,11 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isSending, setIsSending] = useState(false);
-    const [isLoadingHistory, setIsLoadingHistory] = useState(false); 
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+    const [selectedFile, setSelectedFile] = useState(null);
 
     const messagesEndRef = useRef(null);
+    const fileInputRef = useRef(null);
 
     useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
 
@@ -78,10 +80,36 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
         loadHistory();
     }, [sessionId]);
 
+    const handleFileSelect = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+            alert('Hanya file PDF yang diterima.');
+            return;
+        }
+        if (file.size > 20 * 1024 * 1024) {
+            alert('Ukuran file maksimal 20 MB.');
+            return;
+        }
+        setSelectedFile(file);
+        // Reset the input so the same file can be re-selected
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const handleRemoveFile = () => {
+        setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
     const handleSend = async (text) => {
-        if (!text.trim()) return;
+        const hasText = text && text.trim();
+        const hasFile = !!selectedFile;
+        if (!hasText && !hasFile) return;
         
-        const userMsg = { role: 'user', content: text, id: Date.now() };
+        const displayText = hasFile
+            ? (hasText ? `${text}\n📎 ${selectedFile.name}` : `📎 Upload PDF: ${selectedFile.name}`)
+            : text;
+        const userMsg = { role: 'user', content: displayText, id: Date.now() };
         const aiMsgId = Date.now() + 1;
         const assistantPlaceholder = { 
             role: 'assistant', 
@@ -91,16 +119,25 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
             isStreaming: true 
         };
 
+        const fileToUpload = selectedFile;
         setMessages(prev => [...prev, userMsg, assistantPlaceholder]);
         setInput('');
+        setSelectedFile(null);
         setIsSending(true);
 
         try {
-            const result = await sendMessage(sessionId, text, (chunk) => {
+            let result;
+            const onChunk = (chunk) => {
                 setMessages(prev => 
                     prev.map(msg => msg.id === aiMsgId ? { ...msg, content: msg.content + chunk } : msg)
                 );
-            });
+            };
+
+            if (fileToUpload) {
+                result = await uploadPDF(sessionId, fileToUpload, hasText ? text : null, onChunk);
+            } else {
+                result = await sendMessage(sessionId, text, onChunk);
+            }
 
             // ✅ PARSE SOURCES dari response
             let content = result.response;
@@ -380,19 +417,51 @@ const ChatInterface = ({ sessionId, babyData, onEditBabyData }) => {
 
             <div className="p-4 bg-bg-main border-t border-border">
                 <div className="max-w-3xl mx-auto">
+                {selectedFile && (
+                    <div className="flex items-center gap-2 mb-2 px-1">
+                        <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-3 py-1.5 text-sm">
+                            <FileText className="w-4 h-4 text-primary flex-shrink-0" />
+                            <span className="text-text-main truncate max-w-[200px]">{selectedFile.name}</span>
+                            <span className="text-text-muted text-xs">({(selectedFile.size / 1024).toFixed(0)} KB)</span>
+                            <button
+                                type="button"
+                                onClick={handleRemoveFile}
+                                className="ml-1 p-0.5 rounded-full hover:bg-red-100 text-text-muted hover:text-red-500 transition"
+                            >
+                                <X className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
+                    </div>
+                )}
                 <form onSubmit={(e) => { e.preventDefault(); handleSend(input); }}>
                     <div className="flex items-center bg-bg-tertiary border border-border rounded-2xl px-4 py-2 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition shadow-sm">
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept=".pdf"
+                        onChange={handleFileSelect}
+                        className="hidden"
+                    />
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isSending}
+                        title="Upload PDF (KMS, Posyandu, dll)"
+                        className="mr-2 p-2 rounded-lg text-text-muted hover:text-primary hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                    >
+                        <Paperclip className="w-5 h-5" />
+                    </button>
                     <input
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder="Tanya seputar ASI, MPASI, tumbuh kembang..."
+                        placeholder={selectedFile ? "Tambahkan pesan (opsional)..." : "Tanya seputar ASI, MPASI, tumbuh kembang..."}
                         className="flex-1 bg-transparent border-none focus:outline-none text-text-main placeholder-text-light py-2"
                         disabled={isSending}
                     />
                     <button 
                         type="submit" 
-                        disabled={!input.trim() || isSending}
+                        disabled={(!input.trim() && !selectedFile) || isSending}
                         className="ml-2 w-10 h-10 bg-primary text-white rounded-xl hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center transition shadow-sm"
                     >
                         <Send className="w-5 h-5" />

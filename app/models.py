@@ -3,6 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
+
 class ChildProfile(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     session_id: str | None = Field(index=True)
@@ -14,10 +15,10 @@ class ChildProfile(SQLModel, table=True):
     topic: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     is_deleted: bool = Field(
-        default=False, 
-        sa_column_kwargs={"server_default": "false"}
+        default=False, sa_column_kwargs={"server_default": "false"}
     )
     deleted_at: datetime | None = Field(default=None)
+
 
 class ChatMessage(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
@@ -26,10 +27,10 @@ class ChatMessage(SQLModel, table=True):
     content: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
     is_deleted: bool = Field(
-        default=False, 
-        sa_column_kwargs={"server_default": "false"}
+        default=False, sa_column_kwargs={"server_default": "false"}
     )
     deleted_at: datetime | None = Field(default=None)
+
 
 class VaccineRecord(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
@@ -49,6 +50,22 @@ class ToolCall(SQLModel, table=True):
     output_payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
     sources: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class GrowthRecord(SQLModel, table=True):
+    """Stores child growth measurements extracted from uploaded PDFs (KMS, Posyandu, etc.)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    source_filename: str | None = None
+    measurement_date: date | None = None
+    age_months: int | None = None
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    head_circumference_cm: float | None = None
+    notes: str | None = None
+    raw_ocr_text: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Document(SQLModel, table=True):
