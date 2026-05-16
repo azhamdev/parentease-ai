@@ -1,20 +1,100 @@
-from typing import Optional, List
-from sqlmodel import Field, SQLModel, create_engine, Session
+from datetime import date, datetime
+
+from sqlalchemy import Column, JSON
+from sqlmodel import Field, SQLModel
+
 
 class ChildProfile(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    name: str
-    birth_date: str # simplified for example
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str | None = Field(index=True)
+    birth_date: date
+    gender: str
+    name: str | None = None
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    topic: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(
+        default=False, sa_column_kwargs={"server_default": "false"}
+    )
+    deleted_at: datetime | None = Field(default=None)
+
 
 class ChatMessage(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    role: str # 'user' or 'assistant'
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str | None = Field(index=True)
+    role: str
     content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    is_deleted: bool = Field(
+        default=False, sa_column_kwargs={"server_default": "false"}
+    )
+    deleted_at: datetime | None = Field(default=None)
 
-# SQLite connection
-sqlite_file_name = "parentease.db"
-sqlite_url = f"sqlite:///{sqlite_file_name}"
-engine = create_engine(sqlite_url, echo=False)
 
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
+class VaccineRecord(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    vaccine_code: str = Field(index=True)
+    date_given: date | None = None
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ToolCall(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str | None = Field(default=None, index=True)
+    tool_name: str = Field(index=True)
+    status: str = Field(index=True)
+    input_payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    output_payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    sources: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class GrowthRecord(SQLModel, table=True):
+    """Stores child growth measurements extracted from uploaded PDFs (KMS, Posyandu, etc.)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    source_filename: str | None = None
+    measurement_date: date | None = None
+    age_months: int | None = None
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    head_circumference_cm: float | None = None
+    notes: str | None = None
+    raw_ocr_text: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UploadJob(SQLModel, table=True):
+    """Tracks async PDF upload/OCR/ingestion jobs handled by Celery."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: str = Field(index=True, unique=True)
+    session_id: str | None = Field(default=None, index=True)
+    celery_task_id: str | None = Field(default=None, index=True)
+    filename: str
+    content_type: str | None = None
+    file_path: str
+    status: str = Field(default="queued", index=True)
+    message: str | None = None
+    result_payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = None
+
+
+class Document(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    filename: str = Field(index=True)
+    source_type: str = Field(default="pdf", index=True)
+    status: str = Field(default="completed", index=True)
+    collection_name: str | None = Field(default=None, index=True)
+    chunk_count: int = 0
+    error_message: str | None = None
+    ingested_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

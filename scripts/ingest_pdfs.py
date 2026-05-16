@@ -15,12 +15,17 @@ import os
 import sys
 import uuid
 import pathlib
+from datetime import datetime
 
 from dotenv import load_dotenv
 import chromadb
 import pypdf
 from openai import OpenAI
 from chonkie import TokenChunker
+from sqlmodel import Session, select
+
+from app.database import engine
+from app.models import Document
 
 load_dotenv()
 
@@ -99,6 +104,32 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
+def upsert_document_metadata(
+    *,
+    filename: str,
+    status: str,
+    chunk_count: int = 0,
+    error_message: str | None = None,
+) -> None:
+    """Record local ingestion metadata in PostgreSQL for demo/proof checks."""
+    now = datetime.utcnow()
+    with Session(engine) as session:
+        stmt = select(Document).where(Document.filename == filename)
+        document = session.exec(stmt).first()
+        if document is None:
+            document = Document(filename=filename)
+            session.add(document)
+
+        document.source_type = "pdf"
+        document.status = status
+        document.collection_name = COLLECTION_NAME
+        document.chunk_count = chunk_count
+        document.error_message = error_message
+        document.updated_at = now
+        document.ingested_at = now if status == "completed" else None
+        session.commit()
+
+
 # ── Main ingestion logic ───────────────────────────────────────────────────────
 
 
@@ -125,55 +156,75 @@ def ingest() -> None:
 
     for pdf_path in pdf_files:
         print(f"\n── {pdf_path.name} ──")
+        upsert_document_metadata(filename=pdf_path.name, status="processing")
 
-        raw_text, page_ranges = extract_text_with_pages(pdf_path)
-        if not raw_text.strip():
-            print("  [WARN] No text extracted – is this a scanned PDF? Skipping.")
-            continue
+        try:
+            raw_text, page_ranges = extract_text_with_pages(pdf_path)
+            if not raw_text.strip():
+                message = "No text extracted; file may be scanned."
+                print(f"  [WARN] {message} Skipping.")
+                upsert_document_metadata(
+                    filename=pdf_path.name,
+                    status="skipped",
+                    error_message=message,
+                )
+                continue
 
-        # 1. Chunk ───────────────────────────────────────────────────────────
-        chunks = chunker(raw_text)
-        texts = [chunk.text for chunk in chunks]
-        print(
-            f"  Chunks   : {len(texts):>5}  (size={CHUNK_SIZE}t, overlap={CHUNK_OVERLAP}t)"
-        )
-
-        # 2. Embed in batches ────────────────────────────────────────────────
-        all_embeddings: list[list[float]] = []
-        num_batches = (len(texts) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE
-
-        for i in range(num_batches):
-            batch = texts[i * EMBED_BATCH_SIZE : (i + 1) * EMBED_BATCH_SIZE]
-            all_embeddings.extend(embed_texts(batch))
-            print(f"  Embedded : batch {i + 1}/{num_batches}  ({len(batch)} chunks)")
-
-        # 3. Build metadata — include page number for each chunk ─────────────
-        ids = [str(uuid.uuid4()) for _ in chunks]
-        metadatas = [
-            {
-                "source": pdf_path.name,
-                "chunk_index": idx,
-                "page": get_page_number(chunk.start_index, page_ranges),
-            }
-            for idx, chunk in enumerate(chunks)
-        ]
-
-        # 4. Upsert into ChromaDB in batches ─────────────────────────────────
-        num_chroma_batches = (len(texts) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
-        for i in range(num_chroma_batches):
-            s = i * CHROMA_BATCH_SIZE
-            e = s + CHROMA_BATCH_SIZE
-            collection.add(
-                ids=ids[s:e],
-                documents=texts[s:e],
-                embeddings=all_embeddings[s:e],
-                metadatas=metadatas[s:e],
+            # 1. Chunk ───────────────────────────────────────────────────────
+            chunks = chunker(raw_text)
+            texts = [chunk.text for chunk in chunks]
+            print(
+                f"  Chunks   : {len(texts):>5}  (size={CHUNK_SIZE}t, overlap={CHUNK_OVERLAP}t)"
             )
 
-        total_stored += len(texts)
-        print(
-            f"  Stored   : {len(texts):>5} chunks  →  collection total: {collection.count()}"
-        )
+            # 2. Embed in batches ────────────────────────────────────────────
+            all_embeddings: list[list[float]] = []
+            num_batches = (len(texts) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE
+
+            for i in range(num_batches):
+                batch = texts[i * EMBED_BATCH_SIZE : (i + 1) * EMBED_BATCH_SIZE]
+                all_embeddings.extend(embed_texts(batch))
+                print(f"  Embedded : batch {i + 1}/{num_batches}  ({len(batch)} chunks)")
+
+            # 3. Build metadata - include page number for each chunk ─────────
+            ids = [str(uuid.uuid4()) for _ in chunks]
+            metadatas = [
+                {
+                    "source": pdf_path.name,
+                    "chunk_index": idx,
+                    "page": get_page_number(chunk.start_index, page_ranges),
+                }
+                for idx, chunk in enumerate(chunks)
+            ]
+
+            # 4. Upsert into ChromaDB in batches ─────────────────────────────
+            num_chroma_batches = (len(texts) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
+            for i in range(num_chroma_batches):
+                s = i * CHROMA_BATCH_SIZE
+                e = s + CHROMA_BATCH_SIZE
+                collection.add(
+                    ids=ids[s:e],
+                    documents=texts[s:e],
+                    embeddings=all_embeddings[s:e],
+                    metadatas=metadatas[s:e],
+                )
+
+            total_stored += len(texts)
+            upsert_document_metadata(
+                filename=pdf_path.name,
+                status="completed",
+                chunk_count=len(texts),
+            )
+            print(
+                f"  Stored   : {len(texts):>5} chunks  ->  collection total: {collection.count()}"
+            )
+        except Exception as exc:
+            upsert_document_metadata(
+                filename=pdf_path.name,
+                status="failed",
+                error_message=str(exc),
+            )
+            raise
 
     print(
         f"\n[DONE] Ingested {total_stored} chunk(s) from {len(pdf_files)} file(s)."

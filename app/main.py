@@ -1,33 +1,46 @@
-# main.py
 import pathlib
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from sqlmodel import Session
-from pydantic import BaseModel
 from scalar_fastapi import get_scalar_api_reference
-from .models import create_db_and_tables, ChatMessage, engine
-from .agent import process_parent_query
+from .database import create_db_and_tables
+from app.api.v1.endpoints import sessions
+from app.api.v1.endpoints import child_profiles
+from app.api.v1.endpoints import chat
+from app.api.v1.endpoints import tools
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+from app.services.agent.mcp_client import disconnect_mcp_client
+from app.utils.langfuse_logger import init_langfuse
+from app.core.redis_client import init_redis, close_redis
+
+load_dotenv()
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
-
-@asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
+    await init_redis()
+    init_langfuse()
+
     yield
 
+    await disconnect_mcp_client()
+    await close_redis()
 
 app = FastAPI(title="ParentEase AI Backend", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
-class ChatRequest(BaseModel):
-    message: str
-
-
-def get_session():
-    with Session(engine) as session:
-        yield session
+app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
+app.include_router(child_profiles.router, prefix="/api/v1", tags=["child-profiles"])
+app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(tools.router, prefix="/api/v1", tags=["tools"])
 
 
 @app.get("/", include_in_schema=False)
@@ -42,25 +55,3 @@ def scalar_html():
         openapi_url=app.openapi_url,
         title=app.title,
     )
-
-
-@app.post("/chat")
-def chat_endpoint(request: ChatRequest, session: Session = Depends(get_session)):
-    try:
-        # 1. Save user message
-        user_msg = ChatMessage(role="user", content=request.message)
-        session.add(user_msg)
-
-        # 2. Process via OpenAI SDK + Mistral Tools
-        result = process_parent_query(request.message)
-        ai_response_text = result["response"]
-
-        # 3. Save AI response
-        ai_msg = ChatMessage(role="assistant", content=ai_response_text)
-        session.add(ai_msg)
-        session.commit()
-
-        return {"response": ai_response_text, "sources": result["sources"]}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
